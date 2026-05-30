@@ -3,13 +3,11 @@ Output docs/previews/dfx-quickstart.gif
 Require dfx
 
 Set Shell "bash"
-Set FontSize 20
-Set FontFamily "DejaVu Sans Mono"
+Set FontSize 18
+Set FontFamily "Liberation Mono"
 Set Width 1400
 Set Height 900
 Set Padding 24
-Set LetterSpacing 0
-Set LineHeight 1.1
 Set BorderRadius 16
 Set WindowBar "Colorful"
 Set Theme "TokyoNight"

@@ -771,24 +771,39 @@ func TestWindowsSetDryRunPlansBrowserTargets(t *testing.T) {
 	}
 }
 
-func TestWindowsSetRefusesDirectUserChoiceWrites(t *testing.T) {
-	result, err := windowsProvider{}.Set(context.Background(), Association{
+func TestWindowsSetAppliesDefaultAssociationsPolicy(t *testing.T) {
+	policyFile := t.TempDir() + `\DefaultAssociations.xml`
+	t.Setenv(windowsDefaultAssociationsPolicyFileEnv, policyFile)
+	provider := windowsProvider{runner: windowsFakeRunner{
+		paths: map[string]bool{"reg": true},
+		outputs: map[string]string{
+			`reg add HKLM\Software\Policies\Microsoft\Windows\System /v DefaultAssociationsConfiguration /t REG_SZ /d ` + policyFile + ` /f`: "The operation completed successfully.",
+		},
+	}}
+	result, err := provider.Set(context.Background(), Association{
 		Kind:  KindScheme,
 		Value: "https",
 		App:   "ChromeHTML",
 	}, SetOptions{})
-	if err == nil {
-		t.Fatal("expected Windows set to refuse unsafe registry writes")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "UserChoice") || !strings.Contains(err.Error(), "hash-protected") {
-		t.Fatalf("error should explain UserChoice hash protection, got %v", err)
+	if !result.Changed {
+		t.Fatal("policy-backed Windows set should report changed")
+	}
+	content, err := os.ReadFile(policyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), `<Association Identifier="https" ProgId="ChromeHTML" ApplicationName="ChromeHTML" />`) {
+		t.Fatalf("policy file missing https association:\n%s", content)
 	}
 	joined := strings.Join(result.Operations, "\n")
 	for _, want := range []string{
 		"Plan Default apps protocol assignment: HTTPS -> ChromeHTML",
 		"Do not edit UserChoice registry keys directly",
-		"Windows Settings > Apps > Default apps",
-		"default-association XML/CSP policy",
+		"Merged default-association policy XML",
+		"Configured HKLM\\Software\\Policies\\Microsoft\\Windows\\System/DefaultAssociationsConfiguration",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("missing %q in operations:\n%s", want, joined)

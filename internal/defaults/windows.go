@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
@@ -29,11 +30,11 @@ func (p windowsProvider) Inspect(context.Context) InspectReport {
 		Platform: "windows",
 		Provider: "windows-default-apps",
 		CanRead:  canRead,
-		CanWrite: false,
+		CanWrite: canRead,
 		Capabilities: Capabilities{
 			CanReadCurrent:        canRead,
 			CanWriteUserDefault:   false,
-			CanWriteSystemDefault: false,
+			CanWriteSystemDefault: canRead,
 			PolicyRestricted:      true,
 			SupportsBrowser:       true,
 			SupportsScheme:        true,
@@ -41,8 +42,9 @@ func (p windowsProvider) Inspect(context.Context) InspectReport {
 			SupportsContentType:   true,
 		},
 		Notes: []string{
-			"modern Windows protects protocol and file associations with per-user choice and policy constraints",
-			"dfx provides read-only inspection on native Windows until safe write workflows are standardized",
+			"modern Windows protects per-user UserChoice registry entries; dfx does not edit those hash-protected values",
+			"non-dry-run Windows set operations write through default-association XML and the documented machine policy pointer",
+			"policy-backed defaults apply during Windows policy processing, typically after gpupdate and the next sign-in",
 			"see docs/wiki/windows-default-apps.md for policy-aware constraints and rollout guidance",
 		},
 	}
@@ -94,8 +96,8 @@ func (p windowsProvider) Doctor(ctx context.Context, options DoctorOptions) (Doc
 		Scope:    "browser",
 		Healthy:  true,
 		Notes: []string{
-			"dfx on Windows currently performs read-only checks and does not attempt registry writes",
-			"policy/provisioning remains the supported default-assignment channel",
+			"dfx on Windows does not write UserChoice values directly and uses policy-backed channels instead",
+			"non-dry-run set and policy remediation use default-association XML and machine policy updates when available",
 		},
 	}
 
@@ -398,10 +400,17 @@ func (p windowsProvider) DoctorFix(ctx context.Context, options DoctorFixOptions
 	if options.DryRun {
 		return DoctorFixResult{Changed: false, Operations: operations}, nil
 	}
-	return DoctorFixResult{Operations: operations}, windowsUnsupportedOperation("doctor fix")
+	app, err := p.getBrowserDefault(ctx)
+	if err != nil {
+		return DoctorFixResult{Operations: operations}, fmt.Errorf("Windows doctor fix could not determine the current browser default to reapply through policy: %w", err)
+	}
+	operations = append(operations, fmt.Sprintf("Use current HTTP default as policy fix target: %s", app))
+	setResult, err := p.Set(ctx, Association{Kind: KindBrowser, Value: "default", App: app}, SetOptions{})
+	operations = append(operations, setResult.Operations...)
+	return DoctorFixResult{Changed: setResult.Changed, Operations: operations}, err
 }
 
-func (p windowsProvider) Set(_ context.Context, association Association, options SetOptions) (SetResult, error) {
+func (p windowsProvider) Set(ctx context.Context, association Association, options SetOptions) (SetResult, error) {
 	association = association.Normalized()
 	if err := association.Validate(); err != nil {
 		return SetResult{}, err
@@ -410,7 +419,8 @@ func (p windowsProvider) Set(_ context.Context, association Association, options
 	if options.DryRun {
 		return SetResult{Changed: false, Operations: operations}, nil
 	}
-	return SetResult{Operations: operations}, windowsUnsupportedOperation("set")
+	applied, changed, err := p.applyWindowsDefaultAssociationPolicy(ctx, association)
+	return SetResult{Changed: changed, Operations: applied}, err
 }
 
 func (p windowsProvider) ResolveApp(ctx context.Context, query string, target Target) (AppResolution, error) {
@@ -1004,23 +1014,20 @@ func (p windowsProvider) hasAssocRegistration(ctx context.Context, assoc string)
 }
 
 func (p windowsProvider) currentAssociationPolicySignals(ctx context.Context) []string {
-	keys := []string{
-		`HKCU\Software\Policies\Microsoft\Windows\System\DefaultAssociationsConfiguration`,
-		`HKLM\Software\Policies\Microsoft\Windows\System\DefaultAssociationsConfiguration`,
-	}
-	valueNames := []string{"Associations", "AssociationsFile", "DefaultAssociationsConfiguration"}
 	var findings []string
-	for _, key := range keys {
-		values, err := p.readRegValues(ctx, key)
+	for _, source := range windowsDefaultAssociationPolicyRegistrySources() {
+		values, err := p.readRegValues(ctx, source.key)
 		if err != nil {
-			if !p.regKeyExists(ctx, key) {
+			if !p.regKeyExists(ctx, source.key) {
 				continue
 			}
-			findings = append(findings, fmt.Sprintf("%s policy key exists with no readable values", key))
+			if !source.requireValueMatch {
+				findings = append(findings, fmt.Sprintf("%s policy key exists with no readable values", source.key))
+			}
 			continue
 		}
 		matched := false
-		for _, valueName := range valueNames {
+		for _, valueName := range source.valueNames {
 			value, ok := values[valueName]
 			if !ok {
 				continue
@@ -1028,13 +1035,13 @@ func (p windowsProvider) currentAssociationPolicySignals(ctx context.Context) []
 			matched = true
 			value = strings.TrimSpace(value)
 			if value == "" {
-				findings = append(findings, fmt.Sprintf("%s policy key has empty %q value", key, valueName))
+				findings = append(findings, fmt.Sprintf("%s policy key has empty %q value", source.key, valueName))
 				continue
 			}
-			findings = append(findings, fmt.Sprintf("%s policy key advertises %q=%q", key, valueName, value))
+			findings = append(findings, fmt.Sprintf("%s policy key advertises %q=%q", source.key, valueName, value))
 		}
-		if !matched {
-			findings = append(findings, fmt.Sprintf("%s policy key exists but no policy value matched expected names", key))
+		if !matched && !source.requireValueMatch {
+			findings = append(findings, fmt.Sprintf("%s policy key exists but no policy value matched expected names", source.key))
 		}
 	}
 	return findings
@@ -1098,21 +1105,16 @@ func windowsRequiredPolicyTargets() []string {
 }
 
 func (p windowsProvider) windowsPolicyAssociationRecordSet(ctx context.Context) ([]windowsPolicyAssociationRecord, []string) {
-	keys := []string{
-		`HKCU\Software\Policies\Microsoft\Windows\System\DefaultAssociationsConfiguration`,
-		`HKLM\Software\Policies\Microsoft\Windows\System\DefaultAssociationsConfiguration`,
-	}
-	valueNames := []string{"Associations", "AssociationsFile", "DefaultAssociationsConfiguration"}
 	rawValues := []struct {
 		source string
 		value  string
 	}{}
-	for _, key := range keys {
-		values, err := p.readRegValues(ctx, key)
+	for _, source := range windowsDefaultAssociationPolicyRegistrySources() {
+		values, err := p.readRegValues(ctx, source.key)
 		if err != nil {
 			continue
 		}
-		for _, valueName := range valueNames {
+		for _, valueName := range source.valueNames {
 			value, ok := values[valueName]
 			if !ok {
 				continue
@@ -1125,7 +1127,7 @@ func (p windowsProvider) windowsPolicyAssociationRecordSet(ctx context.Context) 
 				source string
 				value  string
 			}{
-				source: fmt.Sprintf("%s/%s", key, valueName),
+				source: fmt.Sprintf("%s/%s", source.key, valueName),
 				value:  trimmed,
 			})
 		}
@@ -2168,6 +2170,165 @@ func mimeToExtensions(mime string) []string {
 	}
 }
 
+func (p windowsProvider) applyWindowsDefaultAssociationPolicy(ctx context.Context, association Association) ([]string, bool, error) {
+	operations := windowsSetGuidanceOperations(association)
+	if !p.regAvailable() {
+		return operations, false, windowsUnsupportedOperation("set")
+	}
+	policyPath := p.windowsDefaultAssociationsPolicyPath(ctx)
+	xmlContent, identifiers, err := p.mergedWindowsDefaultAssociationsPolicyXML(policyPath, association)
+	if err != nil {
+		return operations, false, err
+	}
+	if err := os.MkdirAll(filepath.Dir(policyPath), 0o755); err != nil {
+		return operations, false, fmt.Errorf("create Windows default-associations policy directory: %w", err)
+	}
+	if err := os.WriteFile(policyPath, []byte(xmlContent), 0o644); err != nil {
+		return operations, false, fmt.Errorf("write Windows default-associations policy XML: %w", err)
+	}
+	operations = append(operations, fmt.Sprintf("Merged default-association policy XML for %s into %s", strings.Join(identifiers, ", "), policyPath))
+	if _, err := p.runnerOrDefault().Run(
+		ctx,
+		"reg",
+		"add",
+		windowsDefaultAssociationsPolicyRegistryKey,
+		"/v",
+		windowsDefaultAssociationsPolicyRegistryValue,
+		"/t",
+		"REG_SZ",
+		"/d",
+		policyPath,
+		"/f",
+	); err != nil {
+		return operations, true, fmt.Errorf("configure Windows default-associations machine policy: %w", err)
+	}
+	operations = append(operations, fmt.Sprintf("Configured %s/%s=%s", windowsDefaultAssociationsPolicyRegistryKey, windowsDefaultAssociationsPolicyRegistryValue, policyPath))
+	operations = append(operations, "Windows applies default-association policy during policy processing; run gpupdate /target:computer /force and sign out/in for immediate rollout")
+	return operations, true, nil
+}
+
+func (p windowsProvider) windowsDefaultAssociationsPolicyPath(ctx context.Context) string {
+	if configured := strings.TrimSpace(os.Getenv(windowsDefaultAssociationsPolicyFileEnv)); configured != "" {
+		return expandWindowsEnvPath(configured)
+	}
+	for _, source := range windowsDefaultAssociationPolicyRegistrySources() {
+		values, err := p.readRegValues(ctx, source.key)
+		if err != nil {
+			continue
+		}
+		for _, valueName := range source.valueNames {
+			value := strings.TrimSpace(values[valueName])
+			if value == "" || strings.HasPrefix(normalizeWindowsPolicyAssociationXMLText(value), "<") {
+				continue
+			}
+			fields := strings.FieldsFunc(value, func(r rune) bool { return r == ';' || r == '\n' || r == '\r' })
+			if len(fields) == 0 {
+				continue
+			}
+			path := strings.TrimSpace(strings.Trim(fields[0], `"`))
+			if path == "" {
+				continue
+			}
+			if expanded := expandWindowsEnvPath(path); expanded != "" {
+				return expanded
+			}
+			return path
+		}
+	}
+	return windowsDefaultAssociationsPolicyDefaultPath()
+}
+
+func (p windowsProvider) mergedWindowsDefaultAssociationsPolicyXML(policyPath string, association Association) (string, []string, error) {
+	records := map[string]string{}
+	if content, err := os.ReadFile(policyPath); err == nil && len(strings.TrimSpace(string(content))) > 0 {
+		parsed, issues := parseWindowsPolicyXML(content)
+		if len(issues) > 0 {
+			return "", nil, fmt.Errorf("existing Windows default-associations policy XML is invalid: %s", strings.Join(issues, "; "))
+		}
+		for _, record := range parsed {
+			if record.Identifier == "" || record.ProgID == "" {
+				continue
+			}
+			records[strings.ToLower(record.Identifier)] = record.ProgID
+		}
+	} else if err != nil && !os.IsNotExist(err) {
+		return "", nil, fmt.Errorf("read existing Windows default-associations policy XML: %w", err)
+	}
+
+	identifiers, err := windowsPolicyIdentifiersForAssociation(association)
+	if err != nil {
+		return "", nil, err
+	}
+	for _, identifier := range identifiers {
+		records[strings.ToLower(identifier)] = association.App
+	}
+	return windowsDefaultAssociationsPolicyXML(records), identifiers, nil
+}
+
+func windowsPolicyIdentifiersForAssociation(association Association) ([]string, error) {
+	targets := windowsTargetsForAssociation(association.Target())
+	identifiers := make([]string, 0, len(targets)*2)
+	for _, target := range targets {
+		switch target.Kind {
+		case KindScheme:
+			identifiers = append(identifiers, target.Value)
+		case KindMIME:
+			extensions := mimeToExtensions(target.Value)
+			if len(extensions) == 0 {
+				return nil, fmt.Errorf("Windows policy writes require file-extension mappings for MIME target %q", target.Value)
+			}
+			identifiers = append(identifiers, extensions...)
+		default:
+			return nil, fmt.Errorf("unsupported Windows policy target kind %q", target.Kind)
+		}
+	}
+	return windowsUniqueNonEmptyValues(identifiers), nil
+}
+
+func windowsDefaultAssociationsPolicyXML(records map[string]string) string {
+	identifiers := make([]string, 0, len(records))
+	for identifier, progID := range records {
+		if strings.TrimSpace(identifier) == "" || strings.TrimSpace(progID) == "" {
+			continue
+		}
+		identifiers = append(identifiers, identifier)
+	}
+	sort.Strings(identifiers)
+	var builder strings.Builder
+	builder.WriteString("<DefaultAssociations>\n")
+	for _, identifier := range identifiers {
+		progID := records[identifier]
+		builder.WriteString(`  <Association Identifier="`)
+		builder.WriteString(windowsXMLAttributeEscape(identifier))
+		builder.WriteString(`" ProgId="`)
+		builder.WriteString(windowsXMLAttributeEscape(progID))
+		builder.WriteString(`" ApplicationName="`)
+		builder.WriteString(windowsXMLAttributeEscape(progID))
+		builder.WriteString(`" />`)
+		builder.WriteByte('\n')
+	}
+	builder.WriteString("</DefaultAssociations>\n")
+	return builder.String()
+}
+
+func windowsUniqueNonEmptyValues(values []string) []string {
+	seen := map[string]struct{}{}
+	distinct := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		key := strings.ToLower(value)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		distinct = append(distinct, value)
+	}
+	return distinct
+}
+
 func windowsSetGuidanceOperations(association Association) []string {
 	targets := windowsTargetsForAssociation(association.Target())
 	operations := make([]string, 0, len(targets)+2)
@@ -2226,7 +2387,7 @@ func windowsTargetsForAssociation(target Target) []Target {
 }
 
 func windowsUnsupportedOperation(operation string) error {
-	return fmt.Errorf("Windows %s support is not implemented for safe writes here because UserChoice assignments are hash-protected; use Windows Settings > Apps > Default apps or enterprise default-association XML/CSP policy instead of direct registry edits", operation)
+	return fmt.Errorf("Windows %s requires registry policy tooling; dfx does not edit hash-protected UserChoice values, so use Windows Settings or default-association XML/CSP policy on systems without reg.exe", operation)
 }
 
 func uniqueStrings(values ...string) []string {

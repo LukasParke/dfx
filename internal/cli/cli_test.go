@@ -2001,7 +2001,7 @@ func TestWindowsPolicyCommandNoSubcommandJSON(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("code=%d stderr=%s", code, stderr.String())
 	}
-	assertJSONError(t, &stdout, "windows-policy requires audit, validate, or template", 2)
+	assertJSONError(t, &stdout, "windows-policy requires a subcommand", 2)
 	if stderr.Len() != 0 {
 		t.Fatalf("expected JSON parse error on stdout only, stderr=%s", stderr.String())
 	}
@@ -2013,7 +2013,7 @@ func TestWindowsPolicyCommandNoSubcommandJSONDisabled(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("code=%d stderr=%s", code, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "windows-policy requires audit, validate, or template") {
+	if !strings.Contains(stderr.String(), "windows-policy requires a subcommand") {
 		t.Fatalf("stderr=%s", stderr.String())
 	}
 	if stdout.Len() != 0 {
@@ -2032,6 +2032,57 @@ func TestWindowsPolicyCommandUnknownSubcommandJSONDisabled(t *testing.T) {
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("expected non-JSON error path, got stdout=%s", stdout.String())
+	}
+}
+
+func TestWindowsPolicyGPORestoreRequiresIdentifier(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := runWithProvider([]string{
+		"windows-policy", "gpo-restore", "--path", "C:\\GPOBackups", "--json=false",
+	}, &fakeProvider{}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("code=%d stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "GPO restore requires --gpo-name or --gpo-guid") {
+		t.Fatalf("stderr=%s", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected non-JSON error path, got stdout=%s", stdout.String())
+	}
+}
+
+func TestWindowsPolicyGPORestoreRequiresPath(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := runWithProvider([]string{
+		"windows-policy", "gpo-restore", "--gpo-name", "Default App Policy", "--json=false",
+	}, &fakeProvider{}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("code=%d stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "GPO restore requires --path") {
+		t.Fatalf("stderr=%s", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected non-JSON error path, got stdout=%s", stdout.String())
+	}
+}
+
+func TestWindowsPolicyGPORestoreScriptOutput(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := runWithProvider([]string{
+		"windows-policy", "gpo-restore", "--gpo-name", "Default App Policy", "--path", "C:\\GPOBackups\\DefaultAppPolicy", "--script", "--dry-run", "--json=false",
+	}, &fakeProvider{}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("code=%d stderr=%s", code, stderr.String())
+	}
+	if stdout.Len() == 0 {
+		t.Fatalf("expected script output on stdout")
+	}
+	if !strings.Contains(stdout.String(), "Restore-GPO @params") {
+		t.Fatalf("missing restore script content: %s", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no stderr for script output, got %s", stderr.String())
 	}
 }
 
@@ -2788,7 +2839,7 @@ func TestHelpIncludesOperationalNotes(t *testing.T) {
 		"DFX_CALLBACK_SCHEME",
 		"safe handler-resolution preflight",
 		"enterprise default-association XML",
-		"--fix --dry-run emits the supported remediation plan",
+		"Windows writes use default-association XML policy",
 		"JSON output includes a status object",
 	} {
 		if !strings.Contains(help, want) {
@@ -3167,7 +3218,7 @@ func TestRunGlobalJSONBeforeWindowsPolicyWithoutSubcommandUsesJSON(t *testing.T)
 	if code != 2 {
 		t.Fatalf("code=%d stderr=%s", code, stderr.String())
 	}
-	assertJSONError(t, &stdout, "windows-policy requires audit, validate, or template", 2)
+	assertJSONError(t, &stdout, "windows-policy requires a subcommand", 2)
 	if stderr.Len() != 0 {
 		t.Fatalf("expected no stderr for JSON output: %s", stderr.String())
 	}
@@ -3179,7 +3230,7 @@ func TestRunShortGlobalJSONBeforeWindowsPolicyWithoutSubcommandUsesJSON(t *testi
 	if code != 2 {
 		t.Fatalf("code=%d stderr=%s", code, stderr.String())
 	}
-	assertJSONError(t, &stdout, "windows-policy requires audit, validate, or template", 2)
+	assertJSONError(t, &stdout, "windows-policy requires a subcommand", 2)
 	if stderr.Len() != 0 {
 		t.Fatalf("expected no stderr for JSON output: %s", stderr.String())
 	}
@@ -3953,7 +4004,7 @@ func TestRunShortGlobalJSONFalseBeforeWindowsPolicyWithoutSubcommandUsesNonJSON(
 	if code != 2 {
 		t.Fatalf("code=%d stderr=%s", code, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "windows-policy requires audit, validate, or template") {
+	if !strings.Contains(stderr.String(), "windows-policy requires a subcommand") {
 		t.Fatalf("stderr=%s", stderr.String())
 	}
 	if stdout.Len() != 0 {

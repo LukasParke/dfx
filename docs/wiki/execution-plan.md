@@ -6,8 +6,8 @@ This plan maps research to implementation milestones for `dfx`.
 
 - Milestone 1 is complete: `inspect --verbose` exposes normalized provider capability flags, while `profile template` and `profile validate` provide provider-free profile generation and validation before mutation workflows.
 - Milestone 2 is complete for the tracked Linux matrix: all 30 Linux issues have detection, remediation guidance or mutation behavior, and tests.
-- Milestone 3 is complete for macOS read/detect/guided remediation coverage. Direct LaunchServices writes remain intentionally disabled until a safe public-API workflow is implemented and verified.
-- Milestone 4 is complete for Windows read/detect/guided remediation coverage. Direct `UserChoice` mutation remains intentionally unsupported; remediation is routed through Settings and managed policy workflows. `windows-policy` also provides ProgID capability audits plus XML validation and template generation helpers for enterprise workflows.
+- Milestone 3 is complete for macOS read/detect/remediation coverage. Direct writes are implemented through LaunchServices public APIs when available, with `duti` as a fallback.
+- Milestone 4 is complete for Windows read/detect/remediation coverage. Direct `UserChoice` mutation remains intentionally unsupported; writes are routed through managed default-association XML policy. `windows-policy` also provides ProgID capability discovery/audits, target coverage planning, self-contained deployment/removal bundles, zip archives, and bundle inspection, domain GPO create/configure/link artifacts, Backup-GPO safety backups, Restore-GPO rollback, Get-GPOReport settings reports, Get-GPRegistryValue policy-value inspection, local gpupdate refresh, remote Invoke-GPUpdate scheduling, gpresult/RSoP evidence collection, machine `Registry.pol`, offline `.reg`, LGPO text, and PowerShell policy pointer artifacts, active policy backup/restore, optional app-query-to-ProgID resolution, profile compilation/deployment and XML-to-profile round trips, direct profile-to-ApplicationDefaults CSP replace/delete payload generation, Intune custom OMA-URI setting generation, DISM image/default-user servicing wrappers, XML normalization and diff/drift checks, export, merge, Windows 11 suggested/version policy controls with validation visibility, status, validation, template generation, policy install, and policy uninstall helpers for enterprise workflows.
 - Milestone 5 is implemented for open-test: `open-test` provides a safe handler-resolution preflight with structured evidence, explicit `launched=false` status by default, and an opt-in `--launch` mode with launcher command evidence, with platform-backed integration fixtures now added for GNOME, KDE, WM-only Linux, recent macOS, and Windows 11 scenarios.
 - Milestone 6 is complete: every issue in the 90-issue catalog is mapped in [issue-matrix.md](./issue-matrix.md). macOS and Windows items are marked `safe` where remediation is constrained to guided, non-mutating flows.
 
@@ -49,7 +49,7 @@ Acceptance:
 Goal: safe read-first support, then controlled write support.
 
 - Implement read support for URL scheme and content-role defaults.
-- Implement write support using Launch Services public APIs only.
+- Implement write support using Launch Services public APIs first, with explicit fallback behavior when native APIs are unavailable.
 - Validate bundle id registration and declaration coverage before mutation.
 - Add `dfx doctor macos` for stale handler and declaration mismatch checks.
 

@@ -87,5 +87,5 @@ References:
 - `doctor --browser` now reports `M13` when `http`/`https` point to one browser but web content UTIs are missing or assigned elsewhere, matching partial browser-prompt behavior.
 - `doctor --browser` now reports `M20` when OS version checks indicate LaunchServices behavior should be treated as release/API-sensitive.
 - `doctor --browser` now reports `M25` when common browser profile stores indicate multiple profiles can influence deep-link routing.
-- `set --dry-run` and `doctor --browser --fix --dry-run` now return explicit LaunchServices/System Settings remediation plans, including deduplicated finding-specific `doctor` remediation lines and `duti`-style preview commands for CLI review; actual writes remain unsupported until Launch Services write workflows are implemented safely.
+- `set --dry-run` and `doctor --browser --fix --dry-run` return explicit LaunchServices/System Settings remediation plans, including deduplicated finding-specific `doctor` remediation lines and `duti`-style preview commands for CLI review. Non-dry-run `set` uses LaunchServices public APIs when available and falls back to `duti`.
 - On non-macOS hosts, all runtime operations are surfaced as unsupported with explicit remediation guidance.

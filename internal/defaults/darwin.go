@@ -30,14 +30,15 @@ func newDarwinProvider() Provider {
 
 func (p darwinProvider) Inspect(context.Context) InspectReport {
 	canRead := p.canReadLaunchServices()
+	canWrite := darwinNativeWritesAvailable() || p.dutiAvailable()
 	report := InspectReport{
 		Platform: "darwin",
 		Provider: "launchservices",
 		CanRead:  canRead,
-		CanWrite: false,
+		CanWrite: canWrite,
 		Capabilities: Capabilities{
 			CanReadCurrent:        canRead,
-			CanWriteUserDefault:   false,
+			CanWriteUserDefault:   canWrite,
 			CanWriteSystemDefault: false,
 			PolicyRestricted:      false,
 			SupportsBrowser:       true,
@@ -56,11 +57,16 @@ func (p darwinProvider) Inspect(context.Context) InspectReport {
 	} else {
 		report.Notes = append(report.Notes, "install macOS command line tools (`plutil`) and ensure LaunchServices cache file exists")
 	}
+	if darwinNativeWritesAvailable() {
+		report.Notes = append(report.Notes, "native LaunchServices writes are available for user-level scheme and content-role handlers")
+	}
 	if p.dutiAvailable() {
-		report.Provider = "duti"
-		report.Notes = append(report.Notes, "duti detected; dfx can emit dry-run LaunchServices guidance, but native writes remain disabled until safe workflows are implemented")
+		if !darwinNativeWritesAvailable() {
+			report.Provider = "duti"
+		}
+		report.Notes = append(report.Notes, "duti detected; dfx can use it as a CLI fallback for LaunchServices-style writes")
 	} else {
-		report.Notes = append(report.Notes, "install duti (`brew install duti`) for CLI-oriented write workflows")
+		report.Notes = append(report.Notes, "install duti (`brew install duti`) for CLI-oriented write fallback workflows")
 	}
 	if !p.runnerOrDefaultHas("osascript") {
 		report.Notes = append(report.Notes, "osascript not found; bundle-id validation checks are limited")
@@ -105,10 +111,17 @@ func (p darwinProvider) DoctorFix(ctx context.Context, options DoctorFixOptions)
 	if options.DryRun {
 		return DoctorFixResult{Changed: false, Operations: operations}, nil
 	}
-	return DoctorFixResult{Operations: operations}, p.darwinUnsupportedOperation("doctor fix")
+	app, err := p.Get(ctx, Target{Kind: KindBrowser})
+	if err != nil {
+		return DoctorFixResult{Operations: operations}, fmt.Errorf("macOS doctor fix could not determine the current browser default to reapply: %w", err)
+	}
+	operations = append(operations, fmt.Sprintf("Use current HTTP default as LaunchServices fix target: %s", app))
+	setResult, err := p.Set(ctx, Association{Kind: KindBrowser, Value: "default", App: app}, SetOptions{})
+	operations = append(operations, setResult.Operations...)
+	return DoctorFixResult{Changed: setResult.Changed, Operations: operations}, err
 }
 
-func (p darwinProvider) Set(_ context.Context, association Association, options SetOptions) (SetResult, error) {
+func (p darwinProvider) Set(ctx context.Context, association Association, options SetOptions) (SetResult, error) {
 	association = association.Normalized()
 	if err := association.Validate(); err != nil {
 		return SetResult{}, err
@@ -117,7 +130,8 @@ func (p darwinProvider) Set(_ context.Context, association Association, options 
 	if options.DryRun {
 		return SetResult{Changed: false, Operations: operations}, nil
 	}
-	return SetResult{Operations: operations}, p.darwinUnsupportedOperation("set")
+	applied, changed, err := p.applyDarwinLaunchServicesAssociation(ctx, association)
+	return SetResult{Changed: changed, Operations: applied}, err
 }
 
 func (p darwinProvider) ResolveApp(ctx context.Context, query string, target Target) (AppResolution, error) {
@@ -165,7 +179,7 @@ func (p darwinProvider) doctorForBrowserDefaults(ctx context.Context) (DoctorRep
 		Scope:    "browser",
 		Healthy:  true,
 		Notes: []string{
-			"checks are read-only and validate cache state only; use doctor --browser --fix --dry-run for guided remediation because direct LaunchServices writes are disabled",
+			"checks validate cache state; doctor --browser --fix can reapply the current HTTP handler when a LaunchServices write backend is available",
 		},
 	}
 
@@ -1724,9 +1738,64 @@ func (p darwinProvider) bundleIDLooksInstalled(ctx context.Context, bundleID str
 
 func (p darwinProvider) darwinUnsupportedOperation(operation string) error {
 	if p.dutiAvailable() {
-		return fmt.Errorf("macOS %s cannot apply direct LaunchServices writes safely in this build; use --dry-run to review System Settings guidance and emitted duti-style commands", operation)
+		return fmt.Errorf("macOS %s could not apply LaunchServices writes with the available backend; use --dry-run to review System Settings guidance and emitted duti-style commands", operation)
 	}
-	return fmt.Errorf("macOS %s cannot apply direct LaunchServices writes safely in this build; use --dry-run for System Settings guidance, and install duti (`brew install duti`) only to compare emitted CLI-style remediation commands", operation)
+	return fmt.Errorf("macOS %s requires native LaunchServices support or duti (`brew install duti`) to apply writes; use --dry-run for System Settings guidance", operation)
+}
+
+func (p darwinProvider) applyDarwinLaunchServicesAssociation(ctx context.Context, association Association) ([]string, bool, error) {
+	operations := p.darwinSetGuidanceOperations(association)
+	targets := darwinTargetsForAssociation(association.Target())
+	nativeAvailable := darwinNativeWritesAvailable()
+	dutiAvailable := p.dutiAvailable()
+	if !nativeAvailable && !dutiAvailable {
+		return operations, false, p.darwinUnsupportedOperation("set")
+	}
+
+	changed := false
+	for _, target := range targets {
+		switch target.Kind {
+		case KindScheme:
+			if nativeAvailable {
+				if err := darwinNativeSetURLSchemeHandler(target.Value, association.App); err == nil {
+					operations = append(operations, fmt.Sprintf("Set LaunchServices scheme handler: %s -> %s", target.Value, association.App))
+					changed = true
+					continue
+				} else if !dutiAvailable {
+					return operations, changed, fmt.Errorf("set macOS scheme handler %s: %w", target.Value, err)
+				}
+			}
+			if _, err := p.runnerOrDefault().Run(ctx, "duti", "-s", association.App, target.Value); err != nil {
+				return operations, changed, fmt.Errorf("set macOS scheme handler %s with duti: %w", target.Value, err)
+			}
+			operations = append(operations, fmt.Sprintf("Set duti scheme handler: %s -> %s", target.Value, association.App))
+			changed = true
+		case KindMIME:
+			contentTypes := darwinContentTypesForWrite(target.Value)
+			if len(contentTypes) == 0 {
+				return operations, changed, fmt.Errorf("no writable LaunchServices content type found for MIME %q", target.Value)
+			}
+			for _, contentType := range contentTypes {
+				if nativeAvailable {
+					if err := darwinNativeSetContentTypeHandler(contentType, association.App); err == nil {
+						operations = append(operations, fmt.Sprintf("Set LaunchServices content-role handler: %s -> %s", contentType, association.App))
+						changed = true
+						continue
+					} else if !dutiAvailable {
+						return operations, changed, fmt.Errorf("set macOS content handler %s: %w", contentType, err)
+					}
+				}
+				if _, err := p.runnerOrDefault().Run(ctx, "duti", "-s", association.App, contentType, "all"); err != nil {
+					return operations, changed, fmt.Errorf("set macOS content handler %s with duti: %w", contentType, err)
+				}
+				operations = append(operations, fmt.Sprintf("Set duti content-role handler: %s -> %s", contentType, association.App))
+				changed = true
+			}
+		default:
+			return operations, changed, fmt.Errorf("unsupported macOS target kind %q", target.Kind)
+		}
+	}
+	return operations, changed, nil
 }
 
 func (p darwinProvider) darwinSetGuidanceOperations(association Association) []string {
@@ -1811,4 +1880,19 @@ func normalizeMacContentType(value string) []string {
 	default:
 		return []string{value}
 	}
+}
+
+func darwinContentTypesForWrite(value string) []string {
+	contentTypes := []string{}
+	for _, contentType := range normalizeMacContentType(value) {
+		if strings.Contains(contentType, "/") {
+			continue
+		}
+		contentTypes = append(contentTypes, contentType)
+	}
+	contentTypes = append(contentTypes, darwinNativeContentTypesForMIME(value)...)
+	if len(contentTypes) == 0 {
+		contentTypes = normalizeMacContentType(value)
+	}
+	return uniqueNonEmptyValues(contentTypes)
 }

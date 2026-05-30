@@ -4,13 +4,14 @@ Status legend:
 - `todo`: not implemented
 - `partial`: intentionally deferred / not implemented in this release
 - `safe`: detection + remediation guidance + tests in place; actions are non-mutating
-  by design (platform-native writes are intentionally disabled)
+  by design (platform-native writes may remain constrained in some environments)
 - `done`: detection + remediation + tests in place
 
-For macOS and Windows, remediation is intentionally safe-only in this build; `safe`
-means `set --dry-run` and `doctor --browser --fix --dry-run` emit explicit,
-finding-specific guidance while direct native writes remain intentionally disabled
-until a safe LaunchServices/UserChoice workflow is available. See the
+For macOS, remediation remains intentional and policy-aware, with `set --dry-run`
+and `doctor --browser --fix --dry-run` emitting explicit, finding-specific guidance.
+For Windows, remediation is implemented through default-association XML and machine
+policy-backed workflows; it avoids direct UserChoice writes while still enabling
+non-dry-run policy deployment and cleanup operations. See the
 [Remediation Guide](./remediation-guide.md) for the operator workflow.
 
 ## Linux

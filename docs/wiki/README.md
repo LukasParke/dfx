@@ -8,6 +8,7 @@ This wiki is the research baseline for making `dfx` reliable across Linux, macOS
 - [Linux Reference](./linux-default-apps.md)
 - [macOS Reference](./macos-default-apps.md)
 - [Windows Reference](./windows-default-apps.md)
+- [Remediation Guide](./remediation-guide.md)
 - [Top 30 Issues Per OS](./top-issues-by-os.md)
 - [Issue Matrix](./issue-matrix.md)
 - [Cross-Platform Execution Plan](./execution-plan.md)

@@ -30,18 +30,36 @@ func (p unsupportedProvider) Inspect(context.Context) InspectReport {
 	}
 }
 
-func (p unsupportedProvider) Get(context.Context, Target) (string, error) {
-	return "", fmt.Errorf("%s default application support is unavailable: %s", p.platform, p.reason)
+func (p unsupportedProvider) Get(_ context.Context, target Target) (string, error) {
+	target = target.Normalized()
+	if err := target.Validate(); err != nil {
+		return "", err
+	}
+	return "", unsupportedOperationError(p.platform, p.reason, "get")
 }
 
-func (p unsupportedProvider) Doctor(context.Context, DoctorOptions) (DoctorReport, error) {
-	return DoctorReport{}, fmt.Errorf("%s default application support is unavailable: %s", p.platform, p.reason)
+func (p unsupportedProvider) Doctor(_ context.Context, options DoctorOptions) (DoctorReport, error) {
+	if !options.Browser {
+		return DoctorReport{}, fmt.Errorf("doctor currently requires --browser")
+	}
+	return DoctorReport{}, unsupportedOperationError(p.platform, p.reason, "doctor")
 }
 
-func (p unsupportedProvider) DoctorFix(context.Context, DoctorFixOptions) (DoctorFixResult, error) {
-	return DoctorFixResult{}, fmt.Errorf("%s default application support is unavailable: %s", p.platform, p.reason)
+func (p unsupportedProvider) DoctorFix(_ context.Context, options DoctorFixOptions) (DoctorFixResult, error) {
+	if !options.Browser {
+		return DoctorFixResult{}, fmt.Errorf("doctor fix currently requires --browser")
+	}
+	return DoctorFixResult{}, unsupportedOperationError(p.platform, p.reason, "doctor fix")
 }
 
-func (p unsupportedProvider) Set(context.Context, Association, SetOptions) (SetResult, error) {
-	return SetResult{}, fmt.Errorf("%s default application support is unavailable: %s", p.platform, p.reason)
+func (p unsupportedProvider) Set(_ context.Context, association Association, _ SetOptions) (SetResult, error) {
+	association = association.Normalized()
+	if err := association.Validate(); err != nil {
+		return SetResult{}, err
+	}
+	return SetResult{}, unsupportedOperationError(p.platform, p.reason, "set")
+}
+
+func unsupportedOperationError(platform, reason, operation string) error {
+	return fmt.Errorf("%s %s support is unavailable on this host: %s", platform, operation, reason)
 }

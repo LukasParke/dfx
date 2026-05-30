@@ -1,0 +1,38 @@
+name: previews
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  vhs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install VHS
+        run: go install github.com/charmbracelet/vhs@latest
+
+      - name: Install VHS runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          sudo curl -L --fail --silent -o /usr/local/bin/ttyd https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64
+          sudo chmod +x /usr/local/bin/ttyd
+
+      - name: Generate README previews
+        run: bash scripts/generate-previews.sh
+
+      - name: Upload previews
+        uses: actions/upload-artifact@v4
+        with:
+          name: dfx-vhs-previews
+          path: docs/previews/*.gif

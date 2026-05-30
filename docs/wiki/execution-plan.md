@@ -2,6 +2,15 @@
 
 This plan maps research to implementation milestones for `dfx`.
 
+## Current Build Status
+
+- Milestone 1 is complete: `inspect --verbose` exposes normalized provider capability flags, while `profile template` and `profile validate` provide provider-free profile generation and validation before mutation workflows.
+- Milestone 2 is complete for the tracked Linux matrix: all 30 Linux issues have detection, remediation guidance or mutation behavior, and tests.
+- Milestone 3 is complete for macOS read/detect/guided remediation coverage. Direct LaunchServices writes remain intentionally disabled until a safe public-API workflow is implemented and verified.
+- Milestone 4 is complete for Windows read/detect/guided remediation coverage. Direct `UserChoice` mutation remains intentionally unsupported; remediation is routed through Settings and managed policy workflows. `windows-policy` also provides ProgID capability audits plus XML validation and template generation helpers for enterprise workflows.
+- Milestone 5 is implemented for open-test: `open-test` provides a safe handler-resolution preflight with structured evidence, explicit `launched=false` status by default, and an opt-in `--launch` mode with launcher command evidence, with platform-backed integration fixtures now added for GNOME, KDE, WM-only Linux, recent macOS, and Windows 11 scenarios.
+- Milestone 6 is complete: every issue in the 90-issue catalog is mapped in [issue-matrix.md](./issue-matrix.md). macOS and Windows items are marked `safe` where remediation is constrained to guided, non-mutating flows.
+
 ## Milestone 1: Unified Domain Model
 
 Goal: define one internal model that can represent OS-specific association semantics.
@@ -54,7 +63,7 @@ Goal: policy-aware, truthful behavior with explicit limits.
 - Implement read support for effective defaults and candidate capabilities.
 - Implement policy detection for managed default associations (GPO/MDM).
 - Provide guided remediation output when direct writes are unsupported.
-- Support enterprise workflow helpers (export/validate XML, capability audit).
+- Support enterprise workflow helpers for ProgID capability audits and for validating/generating default-association XML without bypassing `UserChoice`.
 
 Acceptance:
 - Windows issue list coverage >= 22/30 in detection, >= 10/30 in direct remediation.
@@ -64,10 +73,11 @@ Acceptance:
 Goal: prove open-path behavior, not just config state.
 
 - Add `dfx open-test` for:
-- URL scheme open
-- file type open
-- callback scheme open
-- Capture launcher path evidence (where available) and expected handler id.
+- URL scheme handler resolution
+- content/MIME handler resolution
+- callback scheme handler resolution via `DFX_CALLBACK_SCHEME`
+- expected handler comparison with machine-readable pass/fail status
+- optional launch execution with launcher command/argument evidence
 
 Acceptance:
 - Repro tests for OAuth/browser callback scenarios across at least:
@@ -94,7 +104,6 @@ Acceptance:
 
 ## Immediate Next Engineering Tasks
 
-1. Implement Linux precedence-aware reader instead of command-only reader.
-2. Add `dfx doctor --browser` with structured output.
-3. Add machine-readable result format (`--json`) for CI and enterprise automation.
-4. Add provider test fixtures for synthetic config precedence cases.
+1. Integration fixture coverage is now in place across the three OS families for mixed WM/desktop-transition and duplicate-handler edge cases, including mismatch, fallback, duplicate-handler, browser-path, callback mismatch, and launch-skip-on-mismatch scenarios.
+2. Evaluate safe macOS LaunchServices write flows behind explicit capability gates before enabling non-dry-run writes.
+3. Keep the issue matrix, remediation guide, README command contract notes, and JSON automation documentation synchronized as adapter behavior changes.

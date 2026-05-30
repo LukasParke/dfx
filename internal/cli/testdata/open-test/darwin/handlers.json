@@ -1,0 +1,7 @@
+{"LSHandlers":[
+  {"LSHandlerURLScheme":"http","LSHandlerRoleAll":"com.example.browser"},
+  {"LSHandlerURLScheme":"https","LSHandlerRoleAll":"com.example.browser"},
+  {"LSHandlerContentType":"text/html","LSHandlerRoleAll":"com.example.browser"},
+  {"LSHandlerContentType":"application/xhtml+xml","LSHandlerRoleAll":"com.example.browser.xhtml"},
+  {"LSHandlerURLScheme":"myapp","LSHandlerRoleAll":"com.example.callback"}
+]}

@@ -1,0 +1,6 @@
+[Default Applications]
+x-scheme-handler/http=org.gnome.firefox.desktop
+x-scheme-handler/https=org.gnome.firefox.desktop
+text/html=org.gnome.firefox.desktop
+application/xhtml+xml=org.gnome.firefox.xhtml.desktop
+x-scheme-handler/myapp=org.gnome.oauth.desktop

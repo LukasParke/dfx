@@ -1,0 +1,6 @@
+[Default Applications]
+x-scheme-handler/http=org.kde.falkon.desktop
+x-scheme-handler/https=org.kde.falkon.desktop
+text/html=org.kde.falkon.desktop
+application/xhtml+xml=org.kde.falkon.desktop
+x-scheme-handler/myapp=org.kde.oauth.desktop

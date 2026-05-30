@@ -1,0 +1,6 @@
+[Default Applications]
+x-scheme-handler/http=com.wm.custombrowser.desktop
+x-scheme-handler/https=com.wm.custombrowser.desktop
+text/html=com.wm.custombrowser.desktop
+application/xhtml+xml=com.wm.custombrowser.desktop
+x-scheme-handler/myapp=com.wm.oauth.desktop

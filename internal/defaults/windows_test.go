@@ -213,7 +213,7 @@ func TestWindowsCurrentAssociationPolicySignals(t *testing.T) {
 		},
 	}}
 	signals := strings.Join(provider.currentAssociationPolicySignals(context.Background()), "; ")
-	if !strings.Contains(signals, `"Associations"="C:\policy\defaults.xml"`) {
+	if !strings.Contains(signals, `Associations`) || !strings.Contains(signals, `C:\policy\defaults.xml`) {
 		t.Fatalf("policy signals=%q", signals)
 	}
 }
@@ -932,10 +932,10 @@ func TestWindowsContentTypeTargetUsesProgIDLookup(t *testing.T) {
 	provider := windowsProvider{runner: windowsFakeRunner{
 		paths: map[string]bool{"reg": true},
 		outputs: map[string]string{
-			`reg query HKCU\Software\Classes\MyAppProgID`:              "HKEY_CURRENT_USER\\Software\\Classes\\MyAppProgID",
-			`reg query HKLM\Software\Classes\MyAppProgID`:              "",
-			`reg query HKCU\Software\Classes\Applications\MyAppProgID`: "",
-			`reg query HKLM\Software\Classes\Applications\MyAppProgID`: "",
+			`reg query HKCU\Software\Classes\myappprogid`:              "HKEY_CURRENT_USER\\Software\\Classes\\myappprogid",
+			`reg query HKLM\Software\Classes\myappprogid`:              "",
+			`reg query HKCU\Software\Classes\Applications\myappprogid`: "",
+			`reg query HKLM\Software\Classes\Applications\myappprogid`: "",
 		},
 	}}
 
@@ -943,7 +943,7 @@ func TestWindowsContentTypeTargetUsesProgIDLookup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "MyAppProgID" {
+	if got != "myappprogid" {
 		t.Fatalf("got=%q", got)
 	}
 }

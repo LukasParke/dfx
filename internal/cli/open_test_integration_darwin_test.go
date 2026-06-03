@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 
@@ -11,7 +12,7 @@ import (
 
 func TestOpenTestFixturesDarwinRecentRelease(t *testing.T) {
 	provider := defaults.CurrentProvider()
-	if !provider.(interface{ canReadLaunchServices() bool }).canReadLaunchServices() {
+	if !provider.Inspect(context.Background()).CanRead {
 		t.Skip("LaunchServices cache is not readable on this runner")
 	}
 	home := t.TempDir()
@@ -77,7 +78,7 @@ func TestOpenTestFixturesDarwinRecentRelease(t *testing.T) {
 
 func TestOpenTestFixturesDarwinDuplicateHandlerOrder(t *testing.T) {
 	provider := defaults.CurrentProvider()
-	if !provider.(interface{ canReadLaunchServices() bool }).canReadLaunchServices() {
+	if !provider.Inspect(context.Background()).CanRead {
 		t.Skip("LaunchServices cache is not readable on this runner")
 	}
 	home := t.TempDir()

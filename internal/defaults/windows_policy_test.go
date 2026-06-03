@@ -1,6 +1,7 @@
 package defaults
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -114,7 +115,7 @@ func TestWindowsBrowserCapabilityAuditTargetsIncludeCallback(t *testing.T) {
 }
 
 func TestAuditWindowsProgIDRejectsMissingProgID(t *testing.T) {
-	audit, err := AuditWindowsProgID(nil, "", "")
+	audit, err := AuditWindowsProgID(context.TODO(), "", "")
 	if err == nil || audit.Healthy || len(audit.Issues) != 1 || !strings.Contains(audit.Issues[0], "prog id is required") {
 		t.Fatalf("audit=%+v err=%v", audit, err)
 	}

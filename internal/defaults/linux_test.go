@@ -1003,7 +1003,6 @@ func (f fakeFileInfo) ModTime() time.Time { return f.mod }
 func (f fakeFileInfo) IsDir() bool        { return false }
 func (f fakeFileInfo) Sys() any           { return &syscall.Stat_t{Uid: f.uid} }
 
-
 func TestLinuxDoctorMIME(t *testing.T) {
 	runner := &fakeRunner{
 		paths: map[string]bool{"xdg-mime": true},
@@ -1115,12 +1114,12 @@ func TestLinuxDoctorAll(t *testing.T) {
 			"xdg-settings": true,
 		},
 		outputs: map[string]string{
-			"xdg-settings get default-web-browser":            "firefox.desktop",
-			"xdg-mime query default x-scheme-handler/http":    "firefox.desktop",
-			"xdg-mime query default x-scheme-handler/https":   "firefox.desktop",
-			"xdg-mime query default text/html":                "firefox.desktop",
-			"xdg-mime query default application/xhtml+xml":    "firefox.desktop",
-			"xdg-mime query default x-scheme-handler/mailto":  "thunderbird.desktop",
+			"xdg-settings get default-web-browser":           "firefox.desktop",
+			"xdg-mime query default x-scheme-handler/http":   "firefox.desktop",
+			"xdg-mime query default x-scheme-handler/https":  "firefox.desktop",
+			"xdg-mime query default text/html":               "firefox.desktop",
+			"xdg-mime query default application/xhtml+xml":   "firefox.desktop",
+			"xdg-mime query default x-scheme-handler/mailto": "thunderbird.desktop",
 		},
 	}
 	provider := linuxProvider{

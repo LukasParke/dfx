@@ -1817,7 +1817,7 @@ func TestWindowsPolicyValidateMissingFileNonJSON(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "missing.xml") || !strings.Contains(stderr.String(), "no such file") {
+	if !strings.Contains(stderr.String(), "missing.xml") || (!strings.Contains(stderr.String(), "no such file") && !strings.Contains(stderr.String(), "cannot find the file")) {
 		t.Fatalf("stderr=%s", stderr.String())
 	}
 	if stdout.Len() != 0 {

@@ -4239,10 +4239,6 @@ func mergeWindowsPolicyAssociations(records []WindowsPolicyAssociation, identifi
 	return merged
 }
 
-func windowsPolicyXMLFromAssociations(records []WindowsPolicyAssociation) string {
-	return windowsPolicyXMLFromAssociationsWithVersion(records, "")
-}
-
 func windowsPolicyXMLFromAssociationsWithVersion(records []WindowsPolicyAssociation, version string) string {
 	var builder strings.Builder
 	builder.WriteString("<DefaultAssociations")

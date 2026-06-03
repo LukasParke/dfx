@@ -21,12 +21,12 @@ type openTestJSONFixturePayload struct {
 		Matched     *bool           `json:"matched"`
 		Launched    bool            `json:"launched"`
 		Launch      *struct {
-			Subject string `json:"subject"`
-			Command string `json:"command"`
+			Subject string   `json:"subject"`
+			Command string   `json:"command"`
 			Args    []string `json:"args"`
 		} `json:"launch"`
-		Notes       []string        `json:"notes"`
-		Evidence    []string        `json:"evidence"`
+		Notes    []string `json:"notes"`
+		Evidence []string `json:"evidence"`
 	} `json:"report"`
 	Status struct {
 		ExitCode  int  `json:"exit_code"`
@@ -74,6 +74,7 @@ func installOpenTestFixtureFile(t *testing.T, fixture string, destination string
 	}
 }
 
+//lint:ignore U1000 used in platform-specific integration tests (darwin, windows)
 func prependOpenTestFixturePath(t *testing.T, dir string) {
 	t.Helper()
 	pathValue := os.Getenv("PATH")

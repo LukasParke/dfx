@@ -1559,7 +1559,6 @@ func linuxApplicationDirs(p linuxProvider) []string {
 	}
 }
 
-
 func (p linuxProvider) doctorBrowser(ctx context.Context) (DoctorReport, error) {
 	report := DoctorReport{
 		Platform: "linux",

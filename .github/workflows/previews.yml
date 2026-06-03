@@ -24,12 +24,12 @@ jobs:
       - name: Install VHS runtime dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg
+          sudo apt-get install -y ffmpeg xvfb
           sudo curl -L --fail --silent -o /usr/local/bin/ttyd https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64
           sudo chmod +x /usr/local/bin/ttyd
 
       - name: Generate README previews
-        run: bash scripts/generate-previews.sh
+        run: xvfb-run bash scripts/generate-previews.sh
 
       - name: Upload previews
         uses: actions/upload-artifact@v4

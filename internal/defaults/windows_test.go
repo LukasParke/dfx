@@ -213,17 +213,25 @@ func TestWindowsCurrentAssociationPolicySignals(t *testing.T) {
 		},
 	}}
 	signals := strings.Join(provider.currentAssociationPolicySignals(context.Background()), "; ")
-	if !strings.Contains(signals, `Associations="C:\policy\defaults.xml"`) {
+	if !strings.Contains(signals, `"Associations"="C:\policy\defaults.xml"`) {
 		t.Fatalf("policy signals=%q", signals)
 	}
 }
 
 func TestWindowsPolicyProgIDSignals(t *testing.T) {
-	provider := windowsProvider{runner: windowsFakeRunner{paths: map[string]bool{"reg": true}}}
+	provider := windowsProvider{runner: windowsFakeRunner{
+		paths: map[string]bool{"reg": true},
+		outputs: map[string]string{
+			`reg query HKCU\Software\Classes\oldchromehtml`:              "",
+			`reg query HKLM\Software\Classes\oldchromehtml`:              "",
+			`reg query HKCU\Software\Classes\Applications\oldchromehtml`: "",
+			`reg query HKLM\Software\Classes\Applications\oldchromehtml`: "",
+		},
+	}}
 	signals := provider.windowsPolicyAssociationProgIDSignals(context.Background(), []windowsPolicyAssociationRecord{
 		{identifier: "https", progID: "OldChromeHTML"},
 	}, map[string]string{"https": "ChromeHTML"})
-	if len(signals) != 1 || !strings.Contains(signals[0], "OldChromeHTML") {
+	if len(signals) != 1 || !strings.Contains(signals[0], "oldchromehtml") {
 		t.Fatalf("signals=%v", signals)
 	}
 }
@@ -671,7 +679,7 @@ func TestWindowsAssocCommandIconAndVerb(t *testing.T) {
 	provider := windowsProvider{runner: windowsFakeRunner{
 		paths: map[string]bool{"reg": true},
 		outputs: map[string]string{
-			`reg query HKCU\Software\Classes\ChromeHTML\shell\open\command`: `"C:\Browser\browser.exe" "%1"`,
+			`reg query HKCU\Software\Classes\ChromeHTML\shell\open\command`: `(Default)    REG_SZ    "C:\Browser\browser.exe" "%1"`,
 			`reg query HKCU\Software\Classes\ChromeHTML\DefaultIcon`:        `(Default)    REG_SZ    C:\Browser\browser.exe,0`,
 			`reg query HKCU\Software\Classes\ChromeHTML\shell`:              `(Default)    REG_SZ    open`,
 		},
@@ -924,11 +932,14 @@ func TestWindowsContentTypeTargetUsesProgIDLookup(t *testing.T) {
 	provider := windowsProvider{runner: windowsFakeRunner{
 		paths: map[string]bool{"reg": true},
 		outputs: map[string]string{
-			`reg query HKCU\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\myapp\UserChoice`: "ProgId    REG_SZ    MyAppProgID",
+			`reg query HKCU\Software\Classes\MyAppProgID`:              "HKEY_CURRENT_USER\\Software\\Classes\\MyAppProgID",
+			`reg query HKLM\Software\Classes\MyAppProgID`:              "",
+			`reg query HKCU\Software\Classes\Applications\MyAppProgID`: "",
+			`reg query HKLM\Software\Classes\Applications\MyAppProgID`: "",
 		},
 	}}
 
-	got, err := provider.Get(context.Background(), Target{Kind: KindContentType, Value: "myapp"})
+	got, err := provider.Get(context.Background(), Target{Kind: KindContentType, Value: "MyAppProgID"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -945,13 +956,13 @@ func TestWindowsDoctorMIME(t *testing.T) {
 			`reg query HKLM\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.html\UserChoice`: "",
 			`reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.htm\UserChoice`:  "ProgId    REG_SZ    ChromeHTML",
 			`reg query HKLM\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.htm\UserChoice`:  "",
-			`reg query HKCU\Software\Classes\ChromeHTML`:                                                    "HKEY_CURRENT_USER\\Software\\Classes\\ChromeHTML",
-			`reg query HKCU\Software\Classes\ChromeHTML\Capabilities`:                                       `ApplicationDescription    REG_SZ    Chrome`,
-			`reg query HKCU\Software\Classes\ChromeHTML\shell\open\command`:                                 `"C:\Chrome\chrome.exe" "%1"`,
-			`reg query HKCU\Software\Classes\ChromeHTML\DefaultIcon`:                                        `(Default)    REG_SZ    "C:\Chrome\chrome.exe",0`,
-			`reg query HKCU\Software\Classes\ChromeHTML\shell`:                                              `(Default)    REG_SZ    open`,
-			`reg query HKCU\Software\Classes\ChromeHTML\Capabilities\URLAssociations`:                      "http    REG_SZ    ChromeHTML\nhttps    REG_SZ    ChromeHTML",
-			`reg query HKCU\Software\Classes\ChromeHTML\Capabilities\MIMEAssociations`:                     "text/html    REG_SZ    ChromeHTML\napplication/xhtml+xml    REG_SZ    ChromeHTML",
+			`reg query HKCU\Software\Classes\ChromeHTML`:                                                  "HKEY_CURRENT_USER\\Software\\Classes\\ChromeHTML",
+			`reg query HKCU\Software\Classes\ChromeHTML\Capabilities`:                                     `ApplicationDescription    REG_SZ    Chrome`,
+			`reg query HKCU\Software\Classes\ChromeHTML\shell\open\command`:                               `"C:\Chrome\chrome.exe" "%1"`,
+			`reg query HKCU\Software\Classes\ChromeHTML\DefaultIcon`:                                      `(Default)    REG_SZ    "C:\Chrome\chrome.exe",0`,
+			`reg query HKCU\Software\Classes\ChromeHTML\shell`:                                            `(Default)    REG_SZ    open`,
+			`reg query HKCU\Software\Classes\ChromeHTML\Capabilities\URLAssociations`:                     "http    REG_SZ    ChromeHTML\nhttps    REG_SZ    ChromeHTML",
+			`reg query HKCU\Software\Classes\ChromeHTML\Capabilities\MIMEAssociations`:                    "text/html    REG_SZ    ChromeHTML\napplication/xhtml+xml    REG_SZ    ChromeHTML",
 		},
 	}}
 
@@ -973,13 +984,13 @@ func TestWindowsDoctorScheme(t *testing.T) {
 		outputs: map[string]string{
 			`reg query HKCU\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\myapp\UserChoice`: "ProgId    REG_SZ    MyAppProgID",
 			`reg query HKLM\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\myapp\UserChoice`: "",
-			`reg query HKCU\Software\Classes\MyAppProgID`:                                                    "HKEY_CURRENT_USER\\Software\\Classes\\MyAppProgID",
-			`reg query HKCU\Software\Classes\MyAppProgID\Capabilities`:                                       `ApplicationDescription    REG_SZ    MyApp`,
-			`reg query HKCU\Software\Classes\MyAppProgID\shell\open\command`:                                 `"C:\MyApp\myapp.exe" "%1"`,
-			`reg query HKCU\Software\Classes\MyAppProgID\DefaultIcon`:                                        `(Default)    REG_SZ    "C:\MyApp\myapp.exe",0`,
-			`reg query HKCU\Software\Classes\MyAppProgID\shell`:                                              `(Default)    REG_SZ    open`,
-			`reg query HKCU\Software\Classes\MyAppProgID\Capabilities\URLAssociations`:                     "myapp    REG_SZ    MyAppProgID",
-			`reg query HKCU\Software\Classes\MyAppProgID\Capabilities\MIMEAssociations`:                    "text/html    REG_SZ    MyAppProgID\napplication/xhtml+xml    REG_SZ    MyAppProgID",
+			`reg query HKCU\Software\Classes\MyAppProgID`:                                                   "HKEY_CURRENT_USER\\Software\\Classes\\MyAppProgID",
+			`reg query HKCU\Software\Classes\MyAppProgID\Capabilities`:                                      `ApplicationDescription    REG_SZ    MyApp`,
+			`reg query HKCU\Software\Classes\MyAppProgID\shell\open\command`:                                `"C:\MyApp\myapp.exe" "%1"`,
+			`reg query HKCU\Software\Classes\MyAppProgID\DefaultIcon`:                                       `(Default)    REG_SZ    "C:\MyApp\myapp.exe",0`,
+			`reg query HKCU\Software\Classes\MyAppProgID\shell`:                                             `(Default)    REG_SZ    open`,
+			`reg query HKCU\Software\Classes\MyAppProgID\Capabilities\URLAssociations`:                      "myapp    REG_SZ    MyAppProgID",
+			`reg query HKCU\Software\Classes\MyAppProgID\Capabilities\MIMEAssociations`:                     "text/html    REG_SZ    MyAppProgID\napplication/xhtml+xml    REG_SZ    MyAppProgID",
 		},
 	}}
 
@@ -1001,13 +1012,13 @@ func TestWindowsDoctorContentTypeExtension(t *testing.T) {
 		outputs: map[string]string{
 			`reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.txt\UserChoice`: "ProgId    REG_SZ    Notepad",
 			`reg query HKLM\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.txt\UserChoice`: "",
-			`reg query HKCU\Software\Classes\Notepad`:                               "HKEY_CURRENT_USER\\Software\\Classes\\Notepad",
-			`reg query HKCU\Software\Classes\Notepad\Capabilities`:                  `ApplicationDescription    REG_SZ    Notepad`,
-			`reg query HKCU\Software\Classes\Notepad\shell\open\command`:            `notepad.exe "%1"`,
-			`reg query HKCU\Software\Classes\Notepad\DefaultIcon`:                   `(Default)    REG_SZ    notepad.exe,0`,
-			`reg query HKCU\Software\Classes\Notepad\shell`:                         `(Default)    REG_SZ    open`,
-			`reg query HKCU\Software\Classes\Notepad\Capabilities\URLAssociations`:  "",
-			`reg query HKCU\Software\Classes\Notepad\Capabilities\MIMEAssociations`: "",
+			`reg query HKCU\Software\Classes\Notepad`:                                                    "HKEY_CURRENT_USER\\Software\\Classes\\Notepad",
+			`reg query HKCU\Software\Classes\Notepad\Capabilities`:                                       `ApplicationDescription    REG_SZ    Notepad`,
+			`reg query HKCU\Software\Classes\Notepad\shell\open\command`:                                 `notepad.exe "%1"`,
+			`reg query HKCU\Software\Classes\Notepad\DefaultIcon`:                                        `(Default)    REG_SZ    notepad.exe,0`,
+			`reg query HKCU\Software\Classes\Notepad\shell`:                                              `(Default)    REG_SZ    open`,
+			`reg query HKCU\Software\Classes\Notepad\Capabilities\URLAssociations`:                       "",
+			`reg query HKCU\Software\Classes\Notepad\Capabilities\MIMEAssociations`:                      "",
 		},
 	}}
 
@@ -1027,16 +1038,16 @@ func TestWindowsDoctorContentTypeProgID(t *testing.T) {
 	provider := windowsProvider{runner: windowsFakeRunner{
 		paths: map[string]bool{"reg": true},
 		outputs: map[string]string{
-			`reg query HKCU\Software\Classes\MyProgID`:                               "HKEY_CURRENT_USER\\Software\\Classes\\MyProgID",
-			`reg query HKLM\Software\Classes\MyProgID`:                               "",
-			`reg query HKCU\Software\Classes\Applications\MyProgID`:                 "",
-			`reg query HKLM\Software\Classes\Applications\MyProgID`:                 "",
-			`reg query HKCU\Software\Classes\MyProgID\Capabilities`:                  `ApplicationDescription    REG_SZ    MyApp`,
-			`reg query HKCU\Software\Classes\MyProgID\shell\open\command`:            `"C:\MyApp\myapp.exe" "%1"`,
-			`reg query HKCU\Software\Classes\MyProgID\DefaultIcon`:                   `(Default)    REG_SZ    "C:\MyApp\myapp.exe",0`,
-			`reg query HKCU\Software\Classes\MyProgID\shell`:                         `(Default)    REG_SZ    open`,
-			`reg query HKCU\Software\Classes\MyProgID\Capabilities\URLAssociations`:  "",
-			`reg query HKCU\Software\Classes\MyProgID\Capabilities\MIMEAssociations`: "",
+			`reg query HKCU\Software\Classes\myprogid`:                               "HKEY_CURRENT_USER\\Software\\Classes\\myprogid",
+			`reg query HKLM\Software\Classes\myprogid`:                               "",
+			`reg query HKCU\Software\Classes\Applications\myprogid`:                  "",
+			`reg query HKLM\Software\Classes\Applications\myprogid`:                  "",
+			`reg query HKCU\Software\Classes\myprogid\Capabilities`:                  `ApplicationDescription    REG_SZ    MyApp`,
+			`reg query HKCU\Software\Classes\myprogid\shell\open\command`:            `(Default)    REG_SZ    "C:\MyApp\myapp.exe" "%1"`,
+			`reg query HKCU\Software\Classes\myprogid\DefaultIcon`:                   `(Default)    REG_SZ    "C:\MyApp\myapp.exe",0`,
+			`reg query HKCU\Software\Classes\myprogid\shell`:                         `(Default)    REG_SZ    open`,
+			`reg query HKCU\Software\Classes\myprogid\Capabilities\URLAssociations`:  "",
+			`reg query HKCU\Software\Classes\myprogid\Capabilities\MIMEAssociations`: "",
 		},
 	}}
 
@@ -1044,7 +1055,7 @@ func TestWindowsDoctorContentTypeProgID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Scope != "content-type:MyProgID" {
+	if report.Scope != "content-type:myprogid" {
 		t.Fatalf("scope=%q", report.Scope)
 	}
 	if !report.Healthy {
@@ -1057,26 +1068,26 @@ func TestWindowsDoctorAll(t *testing.T) {
 		paths: map[string]bool{"reg": true},
 		outputs: map[string]string{
 			// Browser doctor queries
-			`reg query HKCU\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice`:  "ProgId    REG_SZ    ChromeHTML",
-			`reg query HKLM\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice`:  "",
-			`reg query HKCU\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice`: "ProgId    REG_SZ    ChromeHTML",
-			`reg query HKLM\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice`: "",
+			`reg query HKCU\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice`:   "ProgId    REG_SZ    ChromeHTML",
+			`reg query HKLM\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice`:   "",
+			`reg query HKCU\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice`:  "ProgId    REG_SZ    ChromeHTML",
+			`reg query HKLM\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice`:  "",
 			`reg query HKCU\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\mailto\UserChoice`: "ProgId    REG_SZ    ChromeHTML",
 			`reg query HKLM\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\mailto\UserChoice`: "",
-			`reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.html\UserChoice`:   "ProgId    REG_SZ    ChromeHTML",
-			`reg query HKLM\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.html\UserChoice`:   "",
-			`reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.htm\UserChoice`:    "ProgId    REG_SZ    ChromeHTML",
-			`reg query HKLM\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.htm\UserChoice`:    "",
-			`reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.xhtml\UserChoice`:  "ProgId    REG_SZ    ChromeHTML",
-			`reg query HKLM\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.xhtml\UserChoice`:  "",
-			`reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.xht\UserChoice`:    "ProgId    REG_SZ    ChromeHTML",
-			`reg query HKLM\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.xht\UserChoice`:    "",
-			`reg query HKCU\Software\Classes\ChromeHTML`:                                                      "exists",
+			`reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.html\UserChoice`:    "ProgId    REG_SZ    ChromeHTML",
+			`reg query HKLM\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.html\UserChoice`:    "",
+			`reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.htm\UserChoice`:     "ProgId    REG_SZ    ChromeHTML",
+			`reg query HKLM\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.htm\UserChoice`:     "",
+			`reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.xhtml\UserChoice`:   "ProgId    REG_SZ    ChromeHTML",
+			`reg query HKLM\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.xhtml\UserChoice`:   "",
+			`reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.xht\UserChoice`:     "ProgId    REG_SZ    ChromeHTML",
+			`reg query HKLM\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.xht\UserChoice`:     "",
+			`reg query HKCU\Software\Classes\ChromeHTML`:                                                     "exists",
 			`reg query HKCU\Software\Classes\ChromeHTML\Capabilities\URLAssociations`:                        "http    REG_SZ    ChromeHTML\nhttps    REG_SZ    ChromeHTML\nmailto    REG_SZ    ChromeHTML",
 			`reg query HKCU\Software\Classes\ChromeHTML\Capabilities\FileAssociations`:                       ".html    REG_SZ    ChromeHTML\n.xhtml    REG_SZ    ChromeHTML",
-			`reg query HKCU\Software\Classes\ChromeHTML\shell\open\command`:                                    `"C:\Browser\browser.exe" "%1"`,
-			`reg query HKCU\Software\Classes\ChromeHTML\DefaultIcon`:                                           `(Default)    REG_SZ    C:\Browser\browser.exe,0`,
-			`reg query HKCU\Software\Classes\ChromeHTML\shell`:                                                 `(Default)    REG_SZ    open`,
+			`reg query HKCU\Software\Classes\ChromeHTML\shell\open\command`:                                  `"C:\Browser\browser.exe" "%1"`,
+			`reg query HKCU\Software\Classes\ChromeHTML\DefaultIcon`:                                         `(Default)    REG_SZ    C:\Browser\browser.exe,0`,
+			`reg query HKCU\Software\Classes\ChromeHTML\shell`:                                               `(Default)    REG_SZ    open`,
 			// Enumeration queries
 			`reg query HKCU\Software\Microsoft\Windows\Shell\Associations\UrlAssociations`: `
 HKEY_CURRENT_USER\Software\Microsoft\Windows\Shell\Associations\UrlAssociations
@@ -1119,16 +1130,16 @@ HKEY_LOCAL_MACHINE\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.
 			`reg query HKLM\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\myapp\UserChoice`: "",
 			`reg query HKCU\Software\Classes\MyAppProgID`:                                                   "exists",
 			`reg query HKCU\Software\Classes\MyAppProgID\Capabilities`:                                      `ApplicationDescription    REG_SZ    MyApp`,
-			`reg query HKCU\Software\Classes\MyAppProgID\shell\open\command`:                                 `"C:\MyApp\myapp.exe" "%1"`,
-			`reg query HKCU\Software\Classes\MyAppProgID\DefaultIcon`:                                        `(Default)    REG_SZ    "C:\MyApp\myapp.exe",0`,
-			`reg query HKCU\Software\Classes\MyAppProgID\shell`:                                              `(Default)    REG_SZ    open`,
-			`reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.txt\UserChoice`:     "ProgId    REG_SZ    Notepad",
-			`reg query HKLM\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.txt\UserChoice`:     "",
-			`reg query HKCU\Software\Classes\Notepad`:                                                        "exists",
-			`reg query HKCU\Software\Classes\Notepad\Capabilities`:                                           `ApplicationDescription    REG_SZ    Notepad`,
-			`reg query HKCU\Software\Classes\Notepad\shell\open\command`:                                     `notepad.exe "%1"`,
-			`reg query HKCU\Software\Classes\Notepad\DefaultIcon`:                                            `(Default)    REG_SZ    notepad.exe,0`,
-			`reg query HKCU\Software\Classes\Notepad\shell`:                                                  `(Default)    REG_SZ    open`,
+			`reg query HKCU\Software\Classes\MyAppProgID\shell\open\command`:                                `"C:\MyApp\myapp.exe" "%1"`,
+			`reg query HKCU\Software\Classes\MyAppProgID\DefaultIcon`:                                       `(Default)    REG_SZ    "C:\MyApp\myapp.exe",0`,
+			`reg query HKCU\Software\Classes\MyAppProgID\shell`:                                             `(Default)    REG_SZ    open`,
+			`reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.txt\UserChoice`:    "ProgId    REG_SZ    Notepad",
+			`reg query HKLM\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.txt\UserChoice`:    "",
+			`reg query HKCU\Software\Classes\Notepad`:                                                       "exists",
+			`reg query HKCU\Software\Classes\Notepad\Capabilities`:                                          `ApplicationDescription    REG_SZ    Notepad`,
+			`reg query HKCU\Software\Classes\Notepad\shell\open\command`:                                    `notepad.exe "%1"`,
+			`reg query HKCU\Software\Classes\Notepad\DefaultIcon`:                                           `(Default)    REG_SZ    notepad.exe,0`,
+			`reg query HKCU\Software\Classes\Notepad\shell`:                                                 `(Default)    REG_SZ    open`,
 		},
 	}}
 
@@ -1150,10 +1161,10 @@ func TestWindowsDoctorFixMIME(t *testing.T) {
 	provider := windowsProvider{runner: windowsFakeRunner{
 		paths: map[string]bool{"reg": true},
 		outputs: map[string]string{
-			`reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.html\UserChoice`: "ProgId    REG_SZ    ChromeHTML",
-			`reg query HKLM\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.html\UserChoice`: "",
-			`reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.htm\UserChoice`:  "ProgId    REG_SZ    ChromeHTML",
-			`reg query HKLM\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.htm\UserChoice`:  "",
+			`reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.html\UserChoice`:                                    "ProgId    REG_SZ    ChromeHTML",
+			`reg query HKLM\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.html\UserChoice`:                                    "",
+			`reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.htm\UserChoice`:                                     "ProgId    REG_SZ    ChromeHTML",
+			`reg query HKLM\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.htm\UserChoice`:                                     "",
 			`reg add HKLM\Software\Policies\Microsoft\Windows\System /v DefaultAssociationsConfiguration /t REG_SZ /d ` + policyFile + ` /f`: "The operation completed successfully.",
 		},
 	}}

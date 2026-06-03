@@ -100,6 +100,7 @@ func TestDarwinResolveAppUsesApplicationName(t *testing.T) {
 	runner := &darwinFakeRunner{
 		paths: map[string]bool{"osascript": true},
 		outputs: map[string]string{
+			`osascript -e id of application "vivaldi"`: "com.vivaldi.Vivaldi",
 			`osascript -e id of application "Vivaldi"`: "com.vivaldi.Vivaldi",
 		},
 	}
@@ -1225,11 +1226,14 @@ func TestDarwinContentTypeTargetMatchesDirectUTI(t *testing.T) {
 }
 
 func TestDarwinGetMapsMIMEToContentType(t *testing.T) {
-	provider := darwinProvider{runner: &darwinFakeRunner{paths: map[string]bool{"duti": true},
+	provider := darwinProvider{runner: &darwinFakeRunner{paths: map[string]bool{"duti": true, "plutil": true},
 		outputs: map[string]string{
 			"duti -q uti text/html": "public.html\n",
 		},
 	}}
+	if !provider.canReadLaunchServices() {
+		t.Skip("LaunchServices cache is not readable on this runner")
+	}
 	got, err := provider.Get(context.Background(), Target{Kind: KindMIME, Value: "text/html"})
 	if err != nil {
 		t.Fatal(err)
@@ -1265,6 +1269,9 @@ func TestDarwinDoctorMIME(t *testing.T) {
 			`{"LSHandlerContentType":"text/plain","LSHandlerRoleAll":"com.example.editor"}`+
 			`]}`,
 	)
+	if !provider.canReadLaunchServices() {
+		t.Skip("LaunchServices cache is not readable on this runner")
+	}
 	report, err := provider.Doctor(context.Background(), DoctorOptions{MIME: "text/plain"})
 	if err != nil {
 		t.Fatal(err)

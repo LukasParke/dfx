@@ -11,6 +11,9 @@ import (
 
 func TestOpenTestFixturesDarwinRecentRelease(t *testing.T) {
 	provider := defaults.CurrentProvider()
+	if !provider.(interface{ canReadLaunchServices() bool }).canReadLaunchServices() {
+		t.Skip("LaunchServices cache is not readable on this runner")
+	}
 	home := t.TempDir()
 	launchServicesPlist := filepath.Join(
 		home,
@@ -74,6 +77,9 @@ func TestOpenTestFixturesDarwinRecentRelease(t *testing.T) {
 
 func TestOpenTestFixturesDarwinDuplicateHandlerOrder(t *testing.T) {
 	provider := defaults.CurrentProvider()
+	if !provider.(interface{ canReadLaunchServices() bool }).canReadLaunchServices() {
+		t.Skip("LaunchServices cache is not readable on this runner")
+	}
 	home := t.TempDir()
 	launchServicesPlist := filepath.Join(
 		home,

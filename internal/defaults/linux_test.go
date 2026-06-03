@@ -1102,7 +1102,7 @@ func TestLinuxDoctorContentTypeRejectsNonMIME(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for non-MIME content type")
 	}
-	if !strings.Contains(err.Error(), "Linux has no separate content-type namespace") {
+	if !strings.Contains(err.Error(), "linux has no separate content-type namespace") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

@@ -142,7 +142,7 @@ func (p linuxProvider) Doctor(ctx context.Context, options DoctorOptions) (Docto
 		if validMIMEType(options.ContentType) {
 			return p.doctorMIME(ctx, options.ContentType)
 		}
-		return DoctorReport{}, errors.New("Linux has no separate content-type namespace; use --mime or a valid MIME type")
+		return DoctorReport{}, errors.New("linux has no separate content-type namespace; use --mime or a valid MIME type")
 	case options.All:
 		return p.doctorAll(ctx)
 	default:
@@ -165,7 +165,7 @@ func (p linuxProvider) DoctorFix(ctx context.Context, options DoctorFixOptions) 
 		if validMIMEType(options.ContentType) {
 			return p.doctorFixMIME(ctx, options.ContentType, options.DryRun)
 		}
-		return DoctorFixResult{}, errors.New("Linux has no separate content-type namespace; use --mime or a valid MIME type")
+		return DoctorFixResult{}, errors.New("linux has no separate content-type namespace; use --mime or a valid MIME type")
 	case options.All:
 		return p.doctorFixAll(ctx, options.DryRun)
 	default:
@@ -1739,9 +1739,9 @@ func (p linuxProvider) doctorFixBrowser(ctx context.Context, dryRun bool) (Docto
 
 	result, err := p.Set(ctx, Association{Kind: KindBrowser, Value: "default", App: app}, SetOptions{DryRun: dryRun})
 	if err != nil {
-		return DoctorFixResult{Changed: result.Changed, Operations: result.Operations}, err
+		return DoctorFixResult(result), err
 	}
-	return DoctorFixResult{Changed: result.Changed, Operations: result.Operations}, nil
+	return DoctorFixResult(result), nil
 }
 
 func (p linuxProvider) doctorMIME(ctx context.Context, mimeType string) (DoctorReport, error) {
@@ -2004,7 +2004,7 @@ func (p linuxProvider) doctorFixMIME(ctx context.Context, mimeType string, dryRu
 			candidate = strings.TrimSpace(candidate)
 			if candidate != "" && candidate != "None" && candidate != app && desktopExists(p, candidate) {
 				result, err := p.Set(ctx, Association{Kind: KindMIME, Value: mimeType, App: candidate}, SetOptions{DryRun: dryRun})
-				return DoctorFixResult{Changed: result.Changed, Operations: result.Operations}, err
+				return DoctorFixResult(result), err
 			}
 		}
 	}
@@ -2032,7 +2032,7 @@ func (p linuxProvider) doctorFixScheme(ctx context.Context, scheme string, dryRu
 			candidate = strings.TrimSpace(candidate)
 			if candidate != "" && candidate != "None" && candidate != app && desktopExists(p, candidate) {
 				result, err := p.Set(ctx, Association{Kind: KindScheme, Value: scheme, App: candidate}, SetOptions{DryRun: dryRun})
-				return DoctorFixResult{Changed: result.Changed, Operations: result.Operations}, err
+				return DoctorFixResult(result), err
 			}
 		}
 	}

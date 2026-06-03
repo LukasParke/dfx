@@ -28,6 +28,9 @@ jobs:
           sudo curl -L --fail --silent -o /usr/local/bin/ttyd https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64
           sudo chmod +x /usr/local/bin/ttyd
 
+      - name: Build and install dfx
+        run: go build -o /usr/local/bin/dfx ./cmd/dfx
+
       - name: Generate README previews
         run: xvfb-run bash scripts/generate-previews.sh
 

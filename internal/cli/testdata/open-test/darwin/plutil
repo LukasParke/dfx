@@ -1,2 +1,6 @@
 #!/bin/sh
-cat "$4"
+# Get the last argument (the file path)
+while [ $# -gt 1 ]; do
+    shift
+done
+cat "$1"

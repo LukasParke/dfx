@@ -21,5 +21,5 @@ func AuditWindowsProgID(_ context.Context, progID, _ string) (WindowsCapabilityA
 		audit.Issues = []string{"prog id is required"}
 		return audit, fmt.Errorf("prog id is required")
 	}
-	return audit, fmt.Errorf("Windows ProgID capability audit requires a Windows host")
+	return audit, fmt.Errorf("windows ProgID capability audit requires a Windows host")
 }

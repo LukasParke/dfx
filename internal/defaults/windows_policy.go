@@ -942,7 +942,7 @@ func windowsDefaultAssociationsPolicyStatus(ctx context.Context, runner commandR
 		},
 	}
 	if _, err := runner.LookPath("reg"); err != nil {
-		return result, fmt.Errorf("Windows registry policy tooling is unavailable: %w", err)
+		return result, fmt.Errorf("windows registry policy tooling is unavailable: %w", err)
 	}
 	for _, source := range windowsDefaultAssociationPolicyRegistrySources() {
 		values, err := windowsPolicyReadRegValues(ctx, runner, source.key)
@@ -1009,7 +1009,7 @@ func uninstallWindowsDefaultAssociationsPolicy(ctx context.Context, runner comma
 		},
 	}
 	if _, err := runner.LookPath("reg"); err != nil {
-		return result, fmt.Errorf("Windows registry policy tooling is unavailable: %w", err)
+		return result, fmt.Errorf("windows registry policy tooling is unavailable: %w", err)
 	}
 	values, valuesErr := windowsPolicyReadRegValues(ctx, runner, windowsDefaultAssociationsPolicyRegistryKey)
 	configuredValue := ""
@@ -1072,10 +1072,10 @@ func uninstallWindowsDefaultAssociationsPolicy(ctx context.Context, runner comma
 
 	if options.RefreshPolicy {
 		if _, err := runner.LookPath("gpupdate"); err != nil {
-			return result, fmt.Errorf("Windows policy value was removed, but gpupdate is unavailable: %w", err)
+			return result, fmt.Errorf("windows policy value was removed, but gpupdate is unavailable: %w", err)
 		}
 		if _, err := runner.Run(ctx, "gpupdate", "/target:computer", "/force"); err != nil {
-			return result, fmt.Errorf("Windows policy value was removed, but gpupdate failed: %w", err)
+			return result, fmt.Errorf("windows policy value was removed, but gpupdate failed: %w", err)
 		}
 		result.PolicyRefreshed = true
 		result.Operations = append(result.Operations, "Ran gpupdate /target:computer /force")
@@ -1394,7 +1394,7 @@ func bundleWindowsDefaultAssociationsPolicy(options WindowsPolicyBundleOptions) 
 		result.Validation = ValidateWindowsPolicyXML(xmlContent, options.CallbackScheme)
 		result.Operations = append(result.Operations, fmt.Sprintf("Validate policy XML: valid=%t complete=%t mandatory=%t", result.Validation.Valid, result.Validation.Complete, result.Validation.Mandatory))
 		if !result.Validation.Valid {
-			return result, fmt.Errorf("Windows default-association policy XML is invalid: %s", strings.Join(result.Validation.Issues, "; "))
+			return result, fmt.Errorf("windows default-association policy XML is invalid: %s", strings.Join(result.Validation.Issues, "; "))
 		}
 	}
 	if !options.DryRun {
@@ -1827,7 +1827,7 @@ func windowsDefaultAssociationsPolicyCSP(options WindowsPolicyCSPOptions) (Windo
 	result.Validation = validation
 	result.Operations = append(result.Operations, fmt.Sprintf("Validate policy XML: valid=%t complete=%t mandatory=%t", validation.Valid, validation.Complete, validation.Mandatory))
 	if !validation.Valid {
-		return result, fmt.Errorf("Windows default-association policy XML is invalid: %s", strings.Join(validation.Issues, "; "))
+		return result, fmt.Errorf("windows default-association policy XML is invalid: %s", strings.Join(validation.Issues, "; "))
 	}
 	result.Data = base64.StdEncoding.EncodeToString(content)
 	result.Operations = append(result.Operations, "Base64-encoded policy XML for ApplicationDefaults CSP")
@@ -1900,7 +1900,7 @@ func windowsDefaultAssociationsDISM(ctx context.Context, runner commandRunner, m
 		validation := ValidateWindowsPolicyXML(content, "")
 		result.Operations = append(result.Operations, fmt.Sprintf("Validate policy XML before DISM import: valid=%t complete=%t", validation.Valid, validation.Complete))
 		if !validation.Valid {
-			return result, fmt.Errorf("Windows default-association policy XML is invalid: %s", strings.Join(validation.Issues, "; "))
+			return result, fmt.Errorf("windows default-association policy XML is invalid: %s", strings.Join(validation.Issues, "; "))
 		}
 		result.Command = append(result.Command, "/Import-DefaultAppAssociations:"+file)
 	case "list":
@@ -1916,7 +1916,7 @@ func windowsDefaultAssociationsDISM(ctx context.Context, runner commandRunner, m
 		return result, nil
 	}
 	if _, err := runner.LookPath("dism"); err != nil {
-		return result, fmt.Errorf("Windows DISM tooling is unavailable: %w", err)
+		return result, fmt.Errorf("windows DISM tooling is unavailable: %w", err)
 	}
 	output, err := runner.Run(ctx, result.Command[0], result.Command[1:]...)
 	result.Output = output
@@ -2003,7 +2003,7 @@ func windowsDefaultAssociationsPolicyGPResult(ctx context.Context, runner comman
 		return result, nil
 	}
 	if _, err := runner.LookPath("gpresult"); err != nil {
-		return result, fmt.Errorf("Windows gpresult tooling is unavailable: %w", err)
+		return result, fmt.Errorf("windows gpresult tooling is unavailable: %w", err)
 	}
 	output, err := runner.Run(ctx, result.Command[0], result.Command[1:]...)
 	result.Output = output
@@ -2063,7 +2063,7 @@ func refreshWindowsDefaultAssociationsGroupPolicy(ctx context.Context, runner co
 		return result, nil
 	}
 	if _, err := runner.LookPath("gpupdate"); err != nil {
-		return result, fmt.Errorf("Windows gpupdate tooling is unavailable: %w", err)
+		return result, fmt.Errorf("windows gpupdate tooling is unavailable: %w", err)
 	}
 	output, err := runner.Run(ctx, result.Command[0], result.Command[1:]...)
 	result.Output = output
@@ -2133,7 +2133,7 @@ func invokeWindowsDefaultAssociationsGroupPolicyRefresh(ctx context.Context, run
 		return result, nil
 	}
 	if _, err := runner.LookPath("powershell"); err != nil {
-		return result, fmt.Errorf("Windows PowerShell tooling is unavailable: %w", err)
+		return result, fmt.Errorf("windows PowerShell tooling is unavailable: %w", err)
 	}
 	outputText, err := runner.Run(ctx, result.Command[0], result.Command[1:]...)
 	result.Output = outputText
@@ -2213,7 +2213,7 @@ func windowsDefaultAssociationsPolicyGPOReport(ctx context.Context, runner comma
 		return result, nil
 	}
 	if _, err := runner.LookPath("powershell"); err != nil {
-		return result, fmt.Errorf("Windows PowerShell tooling is unavailable: %w", err)
+		return result, fmt.Errorf("windows PowerShell tooling is unavailable: %w", err)
 	}
 	outputText, err := runner.Run(ctx, result.Command[0], result.Command[1:]...)
 	result.Output = outputText
@@ -2279,7 +2279,7 @@ func windowsDefaultAssociationsPolicyGPOStatus(ctx context.Context, runner comma
 		return result, nil
 	}
 	if _, err := runner.LookPath("powershell"); err != nil {
-		return result, fmt.Errorf("Windows PowerShell tooling is unavailable: %w", err)
+		return result, fmt.Errorf("windows PowerShell tooling is unavailable: %w", err)
 	}
 	outputText, err := runner.Run(ctx, result.Command[0], result.Command[1:]...)
 	result.Output = outputText
@@ -2348,7 +2348,7 @@ func restoreWindowsDefaultAssociationsPolicyGPO(ctx context.Context, runner comm
 		return result, nil
 	}
 	if _, err := runner.LookPath("powershell"); err != nil {
-		return result, fmt.Errorf("Windows PowerShell tooling is unavailable: %w", err)
+		return result, fmt.Errorf("windows PowerShell tooling is unavailable: %w", err)
 	}
 	outputText, err := runner.Run(ctx, result.Command[0], result.Command[1:]...)
 	result.Output = outputText
@@ -2423,7 +2423,7 @@ func backupWindowsDefaultAssociationsPolicyGPO(ctx context.Context, runner comma
 		return result, nil
 	}
 	if _, err := runner.LookPath("powershell"); err != nil {
-		return result, fmt.Errorf("Windows PowerShell tooling is unavailable: %w", err)
+		return result, fmt.Errorf("windows PowerShell tooling is unavailable: %w", err)
 	}
 	outputText, err := runner.Run(ctx, result.Command[0], result.Command[1:]...)
 	result.Output = outputText
@@ -3216,7 +3216,7 @@ func windowsDefaultAssociationsPolicyScript(options WindowsPolicyScriptOptions) 
 		result.Validation = &validation
 		result.Operations = append(result.Operations, fmt.Sprintf("Validate policy XML: valid=%t complete=%t mandatory=%t", validation.Valid, validation.Complete, validation.Mandatory))
 		if !validation.Valid {
-			return result, fmt.Errorf("Windows default-association policy XML is invalid: %s", strings.Join(validation.Issues, "; "))
+			return result, fmt.Errorf("windows default-association policy XML is invalid: %s", strings.Join(validation.Issues, "; "))
 		}
 	}
 	var builder strings.Builder
@@ -3361,7 +3361,7 @@ func normalizeWindowsDefaultAssociationsPolicyXML(options WindowsPolicyNormalize
 	result.Operations = append(result.Operations, "Read policy XML: "+source)
 	records, issues := parseWindowsPolicyXML(content)
 	if len(issues) > 0 {
-		return result, fmt.Errorf("Windows default-association policy XML is invalid: %s", strings.Join(issues, "; "))
+		return result, fmt.Errorf("windows default-association policy XML is invalid: %s", strings.Join(issues, "; "))
 	}
 	version := strings.TrimSpace(options.Version)
 	if version == "" {
@@ -3401,7 +3401,7 @@ func windowsPolicyProfileFromXML(content []byte) (WindowsPolicyProfileResult, er
 		},
 	}
 	if !validation.Valid {
-		return result, fmt.Errorf("Windows default-association policy XML is invalid: %s", strings.Join(validation.Issues, "; "))
+		return result, fmt.Errorf("windows default-association policy XML is invalid: %s", strings.Join(validation.Issues, "; "))
 	}
 	targetProgIDs := windowsPolicyTargetProgIDMap(validation.Records)
 	consumed := map[string]struct{}{}
@@ -3464,7 +3464,7 @@ func listWindowsRegisteredApplications(ctx context.Context, runner commandRunner
 		},
 	}
 	if _, err := runner.LookPath("reg"); err != nil {
-		return result, fmt.Errorf("Windows registry tooling is unavailable: %w", err)
+		return result, fmt.Errorf("windows registry tooling is unavailable: %w", err)
 	}
 	roots := []struct {
 		scope string
@@ -3909,7 +3909,7 @@ func diffWindowsPolicyXMLContent(result WindowsPolicyDiffResult, desiredContent,
 
 func currentWindowsPolicyXMLContent(ctx context.Context, runner commandRunner) ([]byte, string, error) {
 	if _, err := runner.LookPath("reg"); err != nil {
-		return nil, "", fmt.Errorf("Windows registry policy tooling is unavailable: %w", err)
+		return nil, "", fmt.Errorf("windows registry policy tooling is unavailable: %w", err)
 	}
 	for _, source := range windowsDefaultAssociationPolicyRegistrySources() {
 		values, err := windowsPolicyReadRegValues(ctx, runner, source.key)
@@ -3956,7 +3956,7 @@ func exportWindowsDefaultAssociationsPolicy(ctx context.Context, runner commandR
 		return result, nil
 	}
 	if _, err := runner.LookPath("dism"); err != nil {
-		return result, fmt.Errorf("Windows DISM tooling is unavailable: %w", err)
+		return result, fmt.Errorf("windows DISM tooling is unavailable: %w", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
 		return result, fmt.Errorf("create Windows default-associations export directory: %w", err)
@@ -4006,10 +4006,10 @@ func installWindowsDefaultAssociationsPolicy(ctx context.Context, runner command
 	result.Validation = validation
 	result.Operations = append(result.Operations, fmt.Sprintf("Validate policy XML: valid=%t complete=%t mandatory=%t", validation.Valid, validation.Complete, validation.Mandatory))
 	if !validation.Valid {
-		return result, fmt.Errorf("Windows default-association policy XML is invalid: %s", strings.Join(validation.Issues, "; "))
+		return result, fmt.Errorf("windows default-association policy XML is invalid: %s", strings.Join(validation.Issues, "; "))
 	}
 	if !validation.Complete && !options.AllowIncomplete {
-		return result, fmt.Errorf("Windows default-association policy XML is incomplete: missing %s", strings.Join(validation.Missing, ", "))
+		return result, fmt.Errorf("windows default-association policy XML is incomplete: missing %s", strings.Join(validation.Missing, ", "))
 	}
 	if options.AllowIncomplete && !validation.Complete {
 		result.Operations = append(result.Operations, "Install allows incomplete policy coverage by request")
@@ -4029,7 +4029,7 @@ func installWindowsDefaultAssociationsPolicy(ctx context.Context, runner command
 		return result, nil
 	}
 	if _, err := runner.LookPath("reg"); err != nil {
-		return result, fmt.Errorf("Windows registry policy tooling is unavailable: %w", err)
+		return result, fmt.Errorf("windows registry policy tooling is unavailable: %w", err)
 	}
 	if !sameWindowsPolicyPath(source, destination) {
 		if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
@@ -4061,10 +4061,10 @@ func installWindowsDefaultAssociationsPolicy(ctx context.Context, runner command
 	result.Operations = append(result.Operations, fmt.Sprintf("Configured %s/%s=%s", windowsDefaultAssociationsPolicyRegistryKey, windowsDefaultAssociationsPolicyRegistryValue, destination))
 	if options.RefreshPolicy {
 		if _, err := runner.LookPath("gpupdate"); err != nil {
-			return result, fmt.Errorf("Windows policy was configured, but gpupdate is unavailable: %w", err)
+			return result, fmt.Errorf("windows policy was configured, but gpupdate is unavailable: %w", err)
 		}
 		if _, err := runner.Run(ctx, "gpupdate", "/target:computer", "/force"); err != nil {
-			return result, fmt.Errorf("Windows policy was configured, but gpupdate failed: %w", err)
+			return result, fmt.Errorf("windows policy was configured, but gpupdate failed: %w", err)
 		}
 		result.PolicyRefreshed = true
 		result.Operations = append(result.Operations, "Ran gpupdate /target:computer /force")
@@ -4151,7 +4151,7 @@ func windowsPolicyIdentifiersForTarget(target Target, callbackScheme string) ([]
 	case KindMIME:
 		extensions := windowsPolicyMIMEExtensions(target.Value)
 		if len(extensions) == 0 {
-			return nil, fmt.Errorf("Windows policy XML requires file-extension mappings for MIME target %q", target.Value)
+			return nil, fmt.Errorf("windows policy XML requires file-extension mappings for MIME target %q", target.Value)
 		}
 		identifiers = append(identifiers, extensions...)
 	case KindContentType:

@@ -2,6 +2,6 @@
   {"LSHandlerURLScheme":"http","LSHandlerRoleAll":"com.example.legacy.browser"},
   {"LSHandlerURLScheme":"https","LSHandlerRoleAll":"com.example.browser"},
   {"LSHandlerURLScheme":"https","LSHandlerRoleAll":"com.example.legacy.browser"},
-  {"LSHandlerContentType":"text/html","LSHandlerRoleAll":"com.example.browser"},
+  {"LSHandlerContentType":"public.html","LSHandlerRoleAll":"com.example.browser"},
   {"LSHandlerURLScheme":"myapp","LSHandlerRoleAll":"com.example.callback"}
 ]}

@@ -1178,12 +1178,16 @@ func (p darwinProvider) getTargetRoleHandlers(ctx context.Context, target Target
 }
 
 func (p darwinProvider) targetRoleHandlersFromHandlers(target Target, handlers []map[string]any) (map[string]string, error) {
+	var lastMatch map[string]string
 	for _, handler := range handlers {
 		if p.matchesTarget(target, handler) {
 			if roleApps := p.roleValuesFromMap(handler); len(roleApps) != 0 {
-				return roleApps, nil
+				lastMatch = roleApps
 			}
 		}
+	}
+	if lastMatch != nil {
+		return lastMatch, nil
 	}
 	return nil, fmt.Errorf("no handler found for %s %q", target.Kind, target.Value)
 }

@@ -291,11 +291,11 @@ func TestDarwinDoctorDetectsAliasRoleAndCollisionIssues(t *testing.T) {
 	provider, _ := darwinDoctorProviderWithHandlers(t,
 		map[string]bool{"plutil": true},
 		`{"LSHandlers":[`+
-			`{"LSHandlerURLScheme":"http","LSHandlerRoleAll":"com.example.browser","LSHandlerRoleViewer":"com.other.browser"},`+
-			`{"LSHandlerURLScheme":"http","LSHandlerRoleAll":"com.third.browser"},`+
+			`{"LSHandlerURLScheme":"http","LSHandlerRoleAll":"com.example.browser"},`+
+			`{"LSHandlerURLScheme":"http","LSHandlerRoleAll":"com.third.browser","LSHandlerRoleViewer":"com.other.browser"},`+
 			`{"LSHandlerURLScheme":"https","LSHandlerRoleAll":"com.example.browser"},`+
-			`{"LSHandlerContentType":"text/html","LSHandlerRoleAll":"com.example.browser"},`+
 			`{"LSHandlerContentType":"public.html","LSHandlerRoleAll":"com.other.browser"},`+
+			`{"LSHandlerContentType":"text/html","LSHandlerRoleAll":"com.example.browser"},`+
 			`{"LSHandlerContentType":"application/xhtml+xml","LSHandlerRoleAll":"com.example.browser"}`+
 			`]}`,
 	)

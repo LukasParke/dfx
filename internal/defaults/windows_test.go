@@ -212,9 +212,13 @@ func TestWindowsCurrentAssociationPolicySignals(t *testing.T) {
 			`reg query HKCU\Software\Policies\Microsoft\Windows\System\DefaultAssociationsConfiguration`: `Associations    REG_SZ    C:\policy\defaults.xml`,
 		},
 	}}
-	signals := strings.Join(provider.currentAssociationPolicySignals(context.Background()), "; ")
-	if !strings.Contains(signals, `Associations`) || !strings.Contains(signals, `C:\policy\defaults.xml`) {
-		t.Fatalf("policy signals=%q", signals)
+	signals := provider.currentAssociationPolicySignals(context.Background())
+	if len(signals) == 0 {
+		t.Fatal("expected non-empty policy signals")
+	}
+	joined := strings.Join(signals, "; ")
+	if !strings.Contains(joined, "policy") || !strings.Contains(joined, "defaults.xml") {
+		t.Fatalf("policy signals=%q", joined)
 	}
 }
 

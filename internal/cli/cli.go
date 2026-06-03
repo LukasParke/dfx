@@ -47,10 +47,20 @@ type openTestLaunch struct {
 
 var runOpenTestLauncher = defaultOpenTestLauncher
 
+// Version is set at build time via -ldflags.
+var Version = "dev"
+
 func Run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		usage(stderr)
 		return 2
+	}
+
+	for _, arg := range args {
+		if arg == "--version" || arg == "-v" || arg == "-version" {
+			fmt.Fprintln(stdout, Version)
+			return 0
+		}
 	}
 
 	wantsJSON := false
@@ -4841,6 +4851,8 @@ Usage:
   dfx help
   dfx --help
   dfx -h
+  dfx --version
+  dfx -v
   dfx inspect [--verbose] [--json]
   dfx doctor --browser [--json] [--strict]
   dfx doctor --browser --fix [--dry-run] [--json]

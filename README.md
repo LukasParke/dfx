@@ -28,6 +28,28 @@ artifacts through [`previews.yml`](./.github/workflows/previews.yml).
 
 ## Install
 
+### Pre-built binaries
+
+Download the latest release for your platform from [GitHub Releases](https://github.com/LukasParke/dfx/releases).
+
+**Linux / macOS**
+
+```sh
+curl -L -o dfx.tar.gz "https://github.com/LukasParke/dfx/releases/latest/download/dfx_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m).tar.gz"
+tar xzf dfx.tar.gz
+sudo mv dfx /usr/local/bin/
+```
+
+**Windows (PowerShell)**
+
+```powershell
+$arch = if ($env:PROCESSOR_ARCHITECTURE -eq "AMD64") { "amd64" } else { "arm64" }
+Invoke-WebRequest -Uri "https://github.com/LukasParke/dfx/releases/latest/download/dfx_${env:GOOS}_$arch.zip" -OutFile dfx.zip
+Expand-Archive dfx.zip -DestinationPath .\dfx
+```
+
+### From source
+
 ```sh
 go install github.com/LukasParke/dfx/cmd/dfx@latest
 ```

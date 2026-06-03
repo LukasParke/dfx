@@ -10,9 +10,10 @@ import (
 type Kind string
 
 const (
-	KindMIME    Kind = "mime"
-	KindScheme  Kind = "scheme"
-	KindBrowser Kind = "browser"
+	KindMIME        Kind = "mime"
+	KindScheme      Kind = "scheme"
+	KindBrowser     Kind = "browser"
+	KindContentType Kind = "content_type"
 )
 
 type Target struct {
@@ -33,6 +34,8 @@ func (t Target) Normalized() Target {
 		}
 	case KindScheme:
 		value = NormalizeScheme(value)
+	case KindContentType:
+		value = strings.ToLower(value)
 	}
 	return Target{Kind: kind, Value: value}
 }
@@ -62,6 +65,10 @@ func (t Target) Validate() error {
 	case KindBrowser:
 		if value != "" && value != "default" {
 			return fmt.Errorf("invalid browser target value %q", t.Value)
+		}
+	case KindContentType:
+		if value == "" {
+			return errors.New("target value is required")
 		}
 	default:
 		return fmt.Errorf("unsupported target kind %q", t.Kind)
@@ -183,6 +190,7 @@ func (a Association) Validate() error {
 
 type SetOptions struct {
 	DryRun bool
+	System bool
 }
 
 type SetResult struct {
@@ -218,7 +226,11 @@ type InspectReport struct {
 }
 
 type DoctorOptions struct {
-	Browser bool
+	Browser     bool
+	MIME        string
+	Scheme      string
+	ContentType string
+	All         bool
 }
 
 type DoctorFinding struct {
@@ -238,8 +250,12 @@ type DoctorReport struct {
 }
 
 type DoctorFixOptions struct {
-	Browser bool
-	DryRun  bool
+	Browser     bool
+	MIME        string
+	Scheme      string
+	ContentType string
+	All         bool
+	DryRun      bool
 }
 
 type DoctorFixResult struct {

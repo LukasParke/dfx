@@ -23,6 +23,10 @@ const (
 	windowsDefaultAssociationsPolicyCSPLocURI     = "./Device/Vendor/MSFT/Policy/Config/ApplicationDefaults/DefaultAssociationsConfiguration"
 )
 
+func normalizeWindowsPolicyAssociationXMLText(raw string) string {
+	return strings.TrimPrefix(strings.TrimSpace(raw), "\ufeff")
+}
+
 type WindowsPolicyAssociation struct {
 	Identifier   string `json:"identifier"`
 	ProgID       string `json:"prog_id,omitempty"`
@@ -4150,6 +4154,8 @@ func windowsPolicyIdentifiersForTarget(target Target, callbackScheme string) ([]
 			return nil, fmt.Errorf("Windows policy XML requires file-extension mappings for MIME target %q", target.Value)
 		}
 		identifiers = append(identifiers, extensions...)
+	case KindContentType:
+		identifiers = append(identifiers, target.Value)
 	default:
 		return nil, fmt.Errorf("unsupported Windows policy target kind %q", target.Kind)
 	}

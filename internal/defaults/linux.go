@@ -79,6 +79,7 @@ func (p linuxProvider) getenvOrDefault(key string) string {
 }
 
 func (p linuxProvider) Inspect(context.Context) InspectReport {
+	canWriteSystem := os.Geteuid() == 0
 	report := InspectReport{
 		Platform: "linux",
 		Provider: "xdg",
@@ -87,7 +88,7 @@ func (p linuxProvider) Inspect(context.Context) InspectReport {
 		Capabilities: Capabilities{
 			CanReadCurrent:        true,
 			CanWriteUserDefault:   true,
-			CanWriteSystemDefault: false,
+			CanWriteSystemDefault: canWriteSystem,
 			PolicyRestricted:      false,
 			SupportsBrowser:       true,
 			SupportsScheme:        true,
@@ -113,6 +114,7 @@ func (p linuxProvider) Get(ctx context.Context, target Target) (string, error) {
 	if err := target.Validate(); err != nil {
 		return "", err
 	}
+	target = linuxNormalizeContentTypeToMIME(target)
 	if app, ok := p.resolveFromMIMEApps(target); ok {
 		return app, nil
 	}
@@ -126,194 +128,49 @@ func (p linuxProvider) Get(ctx context.Context, target Target) (string, error) {
 }
 
 func (p linuxProvider) Doctor(ctx context.Context, options DoctorOptions) (DoctorReport, error) {
-	if !options.Browser {
-		return DoctorReport{}, errors.New("linux doctor currently requires --browser")
-	}
-	report := DoctorReport{
-		Platform: "linux",
-		Scope:    "browser",
-		Healthy:  true,
-	}
-
-	if !hasCommand(p.runner, "xdg-mime") {
-		report.Healthy = false
-		report.Findings = append(report.Findings, DoctorFinding{
-			ID:          "L26",
-			Severity:    "error",
-			Summary:     "Required command missing: xdg-mime",
-			Remediation: "Install xdg-utils package for your distribution.",
-		})
-		return report, nil
-	}
-	if !hasCommand(p.runner, "gio") {
-		report.Findings = append(report.Findings, DoctorFinding{
-			ID:          "L26",
-			Severity:    "warning",
-			Summary:     "Optional command missing: gio",
-			Remediation: "Install GLib tools to compare GIO behavior against XDG defaults.",
-		})
-	}
-	if !hasCommand(p.runner, "xdg-open") {
-		report.Findings = append(report.Findings, DoctorFinding{
-			ID:          "L11",
-			Severity:    "warning",
-			Summary:     "Optional command missing: xdg-open",
-			Remediation: "Install xdg-utils package support for non-DE open flows.",
-		})
-	}
-	if !hasCommand(p.runner, "xdg-settings") {
-		report.Findings = append(report.Findings, DoctorFinding{
-			ID:          "L26",
-			Severity:    "warning",
-			Summary:     "Optional command missing: xdg-settings",
-			Remediation: "Install xdg-settings to sync desktop browser preference with MIME defaults.",
-		})
-	}
-	report.Findings = append(report.Findings, p.checkRootOwnedUserMIMEApps()...)
-
-	httpApp, _ := p.Get(ctx, Target{Kind: KindScheme, Value: "http"})
-	httpsApp, _ := p.Get(ctx, Target{Kind: KindScheme, Value: "https"})
-	htmlApp, _ := p.Get(ctx, Target{Kind: KindMIME, Value: "text/html"})
-	xhtmlApp, _ := p.Get(ctx, Target{Kind: KindMIME, Value: "application/xhtml+xml"})
-	currentDefaults := map[string]string{
-		"x-scheme-handler/http":  httpApp,
-		"x-scheme-handler/https": httpsApp,
-		"text/html":              htmlApp,
-		"application/xhtml+xml":  xhtmlApp,
-	}
-	report.Findings = append(report.Findings, p.checkMalformedMIMEApps()...)
-	report.Findings = append(report.Findings, p.checkCurrentDesktopContext()...)
-	report.Findings = append(report.Findings, p.checkBrowserEnvFallback()...)
-	report.Findings = append(report.Findings, p.checkPrecedenceConflicts()...)
-	report.Findings = append(report.Findings, p.checkCrossDesktopConfigConflicts(currentDefaults)...)
-	report.Findings = append(report.Findings, p.checkMetadataMaintenanceTools()...)
-	report.Findings = append(report.Findings, p.checkOpenPathContext(httpApp)...)
-	report.Findings = append(report.Findings, p.checkMIMESniffMismatch(ctx)...)
-	report.Findings = append(report.Findings, p.checkCallbackScheme(currentDefaults)...)
-	report.Findings = append(report.Findings, p.checkPortalMismatch(ctx)...)
-	report.Findings = append(report.Findings, p.checkToolkitDisagreement(ctx)...)
-	report.Findings = append(report.Findings, p.checkOverrideRemovedButUISync(ctx, currentDefaults)...)
-
-	if httpApp == "" || httpsApp == "" || htmlApp == "" {
-		report.Healthy = false
-		report.Findings = append(report.Findings, DoctorFinding{
-			ID:          "L01",
-			Severity:    "error",
-			Summary:     "One or more browser associations are unset",
-			Details:     fmt.Sprintf("http=%q https=%q text/html=%q", httpApp, httpsApp, htmlApp),
-			Remediation: "Run dfx set --browser --app <desktop-id> to set all browser associations.",
-		})
-	} else if !(httpApp == httpsApp && httpsApp == htmlApp) {
-		report.Healthy = false
-		report.Findings = append(report.Findings, DoctorFinding{
-			ID:          "L01",
-			Severity:    "error",
-			Summary:     "Browser defaults are inconsistent across core associations",
-			Details:     fmt.Sprintf("http=%q https=%q text/html=%q", httpApp, httpsApp, htmlApp),
-			Remediation: "Run dfx set --browser --app <desktop-id> to make browser defaults consistent.",
-		})
-	}
-
-	if xhtmlApp == "" {
-		report.Findings = append(report.Findings, DoctorFinding{
-			ID:          "L03",
-			Severity:    "warning",
-			Summary:     "application/xhtml+xml is unset",
-			Remediation: "Run dfx set --browser --app <desktop-id> to include XHTML association.",
-		})
-	} else if httpsApp != "" && xhtmlApp != httpsApp {
-		report.Findings = append(report.Findings, DoctorFinding{
-			ID:          "L03",
-			Severity:    "warning",
-			Summary:     "XHTML association differs from browser scheme defaults",
-			Details:     fmt.Sprintf("application/xhtml+xml=%q https=%q", xhtmlApp, httpsApp),
-			Remediation: "Run dfx set --browser --app <desktop-id> to align XHTML with browser scheme defaults.",
-		})
-	}
-	report.Findings = append(report.Findings, p.checkMissingDesktopEntries(httpApp, httpsApp, htmlApp, xhtmlApp)...)
-	report.Findings = append(report.Findings, p.checkBrowserEntryClaims(currentDefaults)...)
-	report.Findings = append(report.Findings, p.checkDuplicateDesktopIDs(httpApp, httpsApp, htmlApp, xhtmlApp)...)
-	report.Findings = append(report.Findings, p.checkAppImageRegistrationMissing(currentDefaults)...)
-	report.Findings = append(report.Findings, p.checkFileManagerCacheLag(currentDefaults)...)
-
-	if hasCommand(p.runner, "xdg-settings") {
-		desktopBrowser, err := p.runner.Run(ctx, "xdg-settings", "get", "default-web-browser")
-		if err == nil && desktopBrowser != "" && httpsApp != "" && desktopBrowser != httpsApp {
-			report.Findings = append(report.Findings, DoctorFinding{
-				ID:          "L25",
-				Severity:    "warning",
-				Summary:     "Desktop browser setting differs from MIME browser default",
-				Details:     fmt.Sprintf("xdg-settings=%q https=%q", desktopBrowser, httpsApp),
-				Remediation: "Run dfx set --browser --app <desktop-id> to synchronize xdg-settings and MIME defaults.",
-			})
+	switch {
+	case options.Browser:
+		return p.doctorBrowser(ctx)
+	case options.MIME != "":
+		if !validMIMEType(options.MIME) {
+			return DoctorReport{}, fmt.Errorf("invalid MIME type: %s", options.MIME)
 		}
-	}
-
-	hasPortal := hasCommand(p.runner, "xdg-desktop-portal")
-	hasBackend := hasCommand(p.runner, "xdg-desktop-portal-gtk") ||
-		hasCommand(p.runner, "xdg-desktop-portal-kde") ||
-		hasCommand(p.runner, "xdg-desktop-portal-wlr") ||
-		hasCommand(p.runner, "xdg-desktop-portal-hyprland")
-	if !hasPortal || !hasBackend {
-		report.Findings = append(report.Findings, DoctorFinding{
-			ID:       "L08",
-			Severity: "warning",
-			Summary:  "Portal stack appears incomplete for sandboxed app OpenURI flows",
-			Details:  fmt.Sprintf("xdg-desktop-portal=%t backend=%t", hasPortal, hasBackend),
-			Remediation: "Install xdg-desktop-portal and a desktop backend " +
-				"(gtk/kde/wlr/hyprland) used by your session.",
-		})
-	}
-
-	if len(report.Findings) != 0 {
-		for _, finding := range report.Findings {
-			if finding.Severity == "error" {
-				report.Healthy = false
-				return report, nil
-			}
+		return p.doctorMIME(ctx, options.MIME)
+	case options.Scheme != "":
+		return p.doctorScheme(ctx, options.Scheme)
+	case options.ContentType != "":
+		if validMIMEType(options.ContentType) {
+			return p.doctorMIME(ctx, options.ContentType)
 		}
-		report.Healthy = true
+		return DoctorReport{}, errors.New("Linux has no separate content-type namespace; use --mime or a valid MIME type")
+	case options.All:
+		return p.doctorAll(ctx)
+	default:
+		return DoctorReport{}, errors.New("no scope specified for linux doctor")
 	}
-	return report, nil
 }
 
 func (p linuxProvider) DoctorFix(ctx context.Context, options DoctorFixOptions) (DoctorFixResult, error) {
-	if !options.Browser {
-		return DoctorFixResult{}, errors.New("linux doctor fix currently requires --browser")
-	}
-	candidates := []Target{
-		{Kind: KindScheme, Value: "https"},
-		{Kind: KindScheme, Value: "http"},
-		{Kind: KindMIME, Value: "text/html"},
-		{Kind: KindMIME, Value: "application/xhtml+xml"},
-	}
-	var app string
-	for _, target := range candidates {
-		current, _ := p.Get(ctx, target)
-		current = strings.TrimSpace(current)
-		if current != "" && current != "None" && desktopExists(p, current) {
-			app = current
-			break
+	switch {
+	case options.Browser:
+		return p.doctorFixBrowser(ctx, options.DryRun)
+	case options.MIME != "":
+		if !validMIMEType(options.MIME) {
+			return DoctorFixResult{}, fmt.Errorf("invalid MIME type: %s", options.MIME)
 		}
-	}
-	if app == "" && hasCommand(p.runner, "xdg-settings") {
-		current, err := p.runner.Run(ctx, "xdg-settings", "get", "default-web-browser")
-		if err == nil {
-			current = strings.TrimSpace(current)
-			if current != "" && current != "None" && desktopExists(p, current) {
-				app = current
-			}
+		return p.doctorFixMIME(ctx, options.MIME, options.DryRun)
+	case options.Scheme != "":
+		return p.doctorFixScheme(ctx, options.Scheme, options.DryRun)
+	case options.ContentType != "":
+		if validMIMEType(options.ContentType) {
+			return p.doctorFixMIME(ctx, options.ContentType, options.DryRun)
 		}
+		return DoctorFixResult{}, errors.New("Linux has no separate content-type namespace; use --mime or a valid MIME type")
+	case options.All:
+		return p.doctorFixAll(ctx, options.DryRun)
+	default:
+		return DoctorFixResult{}, errors.New("no scope specified for linux doctor fix")
 	}
-	if app == "" {
-		return DoctorFixResult{}, errors.New("unable to select a valid installed browser desktop id to repair defaults")
-	}
-
-	result, err := p.Set(ctx, Association{Kind: KindBrowser, Value: "default", App: app}, SetOptions{DryRun: options.DryRun})
-	if err != nil {
-		return DoctorFixResult{Changed: result.Changed, Operations: result.Operations}, err
-	}
-	return DoctorFixResult{Changed: result.Changed, Operations: result.Operations}, nil
 }
 
 func (p linuxProvider) Set(ctx context.Context, association Association, options SetOptions) (SetResult, error) {
@@ -321,6 +178,7 @@ func (p linuxProvider) Set(ctx context.Context, association Association, options
 	if err := association.Validate(); err != nil {
 		return SetResult{}, err
 	}
+	association.Kind = linuxNormalizeContentTypeToMIME(association.Target()).Kind
 
 	targets := linuxTargetsForAssociation(association.Target())
 	ops := make([]string, 0, len(targets)+1)
@@ -332,6 +190,9 @@ func (p linuxProvider) Set(ctx context.Context, association Association, options
 	}
 	if options.DryRun {
 		return SetResult{Changed: false, Operations: ops}, nil
+	}
+	if options.System {
+		return p.setSystem(ctx, association, targets, ops)
 	}
 	if _, err := p.runner.LookPath("xdg-mime"); err != nil {
 		return SetResult{Changed: false, Operations: ops}, errors.New("xdg-mime is required on Linux")
@@ -353,6 +214,73 @@ func (p linuxProvider) Set(ctx context.Context, association Association, options
 	return SetResult{Changed: changed, Operations: ops}, nil
 }
 
+func (p linuxProvider) setSystem(ctx context.Context, association Association, targets []Target, ops []string) (SetResult, error) {
+	if os.Geteuid() != 0 {
+		return SetResult{Changed: false, Operations: ops}, errors.New("system-level writes on Linux require root privileges")
+	}
+	systemPath := "/etc/xdg/mimeapps.list"
+	if err := os.MkdirAll(filepath.Dir(systemPath), 0o755); err != nil {
+		return SetResult{Changed: false, Operations: ops}, fmt.Errorf("create system config dir: %w", err)
+	}
+	content, _ := os.ReadFile(systemPath)
+	updated := linuxUpdateMIMEAppsList(string(content), association)
+	if err := os.WriteFile(systemPath, []byte(updated), 0o644); err != nil {
+		return SetResult{Changed: false, Operations: ops}, fmt.Errorf("write system mimeapps.list: %w", err)
+	}
+	if hasCommand(p.runner, "update-desktop-database") {
+		p.runner.Run(ctx, "update-desktop-database")
+	}
+	if hasCommand(p.runner, "update-mime-database") {
+		p.runner.Run(ctx, "update-mime-database", "/usr/share/mime")
+	}
+	return SetResult{Changed: true, Operations: append(ops, "Wrote system /etc/xdg/mimeapps.list")}, nil
+}
+
+func linuxUpdateMIMEAppsList(content string, association Association) string {
+	key := linuxAssociationName(association.Target())
+	value := association.App
+	lines := strings.Split(content, "\n")
+	var out []string
+	inDefaults := false
+	found := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "[Default Applications]" {
+			inDefaults = true
+			out = append(out, line)
+			continue
+		}
+		if inDefaults && strings.HasPrefix(trimmed, "[") {
+			if !found {
+				out = append(out, key+"="+value+";")
+				found = true
+			}
+			inDefaults = false
+		}
+		if inDefaults {
+			if eq := strings.Index(line, "="); eq > 0 {
+				k := strings.TrimSpace(line[:eq])
+				if k == key {
+					out = append(out, key+"="+value+";")
+					found = true
+					continue
+				}
+			}
+		}
+		out = append(out, line)
+	}
+	if !found {
+		if !inDefaults {
+			if len(out) > 0 && strings.TrimSpace(out[len(out)-1]) != "" {
+				out = append(out, "")
+			}
+			out = append(out, "[Default Applications]")
+		}
+		out = append(out, key+"="+value+";")
+	}
+	return strings.Join(out, "\n")
+}
+
 func (p linuxProvider) ResolveApp(_ context.Context, query string, target Target) (AppResolution, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
@@ -362,6 +290,7 @@ func (p linuxProvider) ResolveApp(_ context.Context, query string, target Target
 	if err := target.Validate(); err != nil {
 		return AppResolution{}, err
 	}
+	target = linuxNormalizeContentTypeToMIME(target)
 
 	for _, id := range linuxDesktopIDGuesses(query) {
 		if desktopExists(p, id) {
@@ -556,6 +485,15 @@ func linuxAssociationName(target Target) string {
 		return "x-scheme-handler/" + target.Value
 	}
 	return target.Value
+}
+
+func linuxNormalizeContentTypeToMIME(target Target) Target {
+	if target.Kind == KindContentType {
+		if validMIMEType(target.Value) {
+			return Target{Kind: KindMIME, Value: target.Value}
+		}
+	}
+	return target
 }
 
 func isBrowserTarget(target Target) bool {
@@ -1619,4 +1557,674 @@ func linuxApplicationDirs(p linuxProvider) []string {
 		filepath.Join(home, ".local/share/flatpak/exports/share/applications"),
 		"/var/lib/snapd/desktop/applications",
 	}
+}
+
+
+func (p linuxProvider) doctorBrowser(ctx context.Context) (DoctorReport, error) {
+	report := DoctorReport{
+		Platform: "linux",
+		Scope:    "browser",
+		Healthy:  true,
+	}
+
+	if !hasCommand(p.runner, "xdg-mime") {
+		report.Healthy = false
+		report.Findings = append(report.Findings, DoctorFinding{
+			ID:          "L26",
+			Severity:    "error",
+			Summary:     "Required command missing: xdg-mime",
+			Remediation: "Install xdg-utils package for your distribution.",
+		})
+		return report, nil
+	}
+	if !hasCommand(p.runner, "gio") {
+		report.Findings = append(report.Findings, DoctorFinding{
+			ID:          "L26",
+			Severity:    "warning",
+			Summary:     "Optional command missing: gio",
+			Remediation: "Install GLib tools to compare GIO behavior against XDG defaults.",
+		})
+	}
+	if !hasCommand(p.runner, "xdg-open") {
+		report.Findings = append(report.Findings, DoctorFinding{
+			ID:          "L11",
+			Severity:    "warning",
+			Summary:     "Optional command missing: xdg-open",
+			Remediation: "Install xdg-utils package support for non-DE open flows.",
+		})
+	}
+	if !hasCommand(p.runner, "xdg-settings") {
+		report.Findings = append(report.Findings, DoctorFinding{
+			ID:          "L26",
+			Severity:    "warning",
+			Summary:     "Optional command missing: xdg-settings",
+			Remediation: "Install xdg-settings to sync desktop browser preference with MIME defaults.",
+		})
+	}
+	report.Findings = append(report.Findings, p.checkRootOwnedUserMIMEApps()...)
+
+	httpApp, _ := p.Get(ctx, Target{Kind: KindScheme, Value: "http"})
+	httpsApp, _ := p.Get(ctx, Target{Kind: KindScheme, Value: "https"})
+	htmlApp, _ := p.Get(ctx, Target{Kind: KindMIME, Value: "text/html"})
+	xhtmlApp, _ := p.Get(ctx, Target{Kind: KindMIME, Value: "application/xhtml+xml"})
+	currentDefaults := map[string]string{
+		"x-scheme-handler/http":  httpApp,
+		"x-scheme-handler/https": httpsApp,
+		"text/html":              htmlApp,
+		"application/xhtml+xml":  xhtmlApp,
+	}
+	report.Findings = append(report.Findings, p.checkMalformedMIMEApps()...)
+	report.Findings = append(report.Findings, p.checkCurrentDesktopContext()...)
+	report.Findings = append(report.Findings, p.checkBrowserEnvFallback()...)
+	report.Findings = append(report.Findings, p.checkPrecedenceConflicts()...)
+	report.Findings = append(report.Findings, p.checkCrossDesktopConfigConflicts(currentDefaults)...)
+	report.Findings = append(report.Findings, p.checkMetadataMaintenanceTools()...)
+	report.Findings = append(report.Findings, p.checkOpenPathContext(httpApp)...)
+	report.Findings = append(report.Findings, p.checkMIMESniffMismatch(ctx)...)
+	report.Findings = append(report.Findings, p.checkCallbackScheme(currentDefaults)...)
+	report.Findings = append(report.Findings, p.checkPortalMismatch(ctx)...)
+	report.Findings = append(report.Findings, p.checkToolkitDisagreement(ctx)...)
+	report.Findings = append(report.Findings, p.checkOverrideRemovedButUISync(ctx, currentDefaults)...)
+
+	if httpApp == "" || httpsApp == "" || htmlApp == "" {
+		report.Healthy = false
+		report.Findings = append(report.Findings, DoctorFinding{
+			ID:          "L01",
+			Severity:    "error",
+			Summary:     "One or more browser associations are unset",
+			Details:     fmt.Sprintf("http=%q https=%q text/html=%q", httpApp, httpsApp, htmlApp),
+			Remediation: "Run dfx set --browser --app <desktop-id> to set all browser associations.",
+		})
+	} else if !(httpApp == httpsApp && httpsApp == htmlApp) {
+		report.Healthy = false
+		report.Findings = append(report.Findings, DoctorFinding{
+			ID:          "L01",
+			Severity:    "error",
+			Summary:     "Browser defaults are inconsistent across core associations",
+			Details:     fmt.Sprintf("http=%q https=%q text/html=%q", httpApp, httpsApp, htmlApp),
+			Remediation: "Run dfx set --browser --app <desktop-id> to make browser defaults consistent.",
+		})
+	}
+
+	if xhtmlApp == "" {
+		report.Findings = append(report.Findings, DoctorFinding{
+			ID:          "L03",
+			Severity:    "warning",
+			Summary:     "application/xhtml+xml is unset",
+			Remediation: "Run dfx set --browser --app <desktop-id> to include XHTML association.",
+		})
+	} else if httpsApp != "" && xhtmlApp != httpsApp {
+		report.Findings = append(report.Findings, DoctorFinding{
+			ID:          "L03",
+			Severity:    "warning",
+			Summary:     "XHTML association differs from browser scheme defaults",
+			Details:     fmt.Sprintf("application/xhtml+xml=%q https=%q", xhtmlApp, httpsApp),
+			Remediation: "Run dfx set --browser --app <desktop-id> to align XHTML with browser scheme defaults.",
+		})
+	}
+	report.Findings = append(report.Findings, p.checkMissingDesktopEntries(httpApp, httpsApp, htmlApp, xhtmlApp)...)
+	report.Findings = append(report.Findings, p.checkBrowserEntryClaims(currentDefaults)...)
+	report.Findings = append(report.Findings, p.checkDuplicateDesktopIDs(httpApp, httpsApp, htmlApp, xhtmlApp)...)
+	report.Findings = append(report.Findings, p.checkAppImageRegistrationMissing(currentDefaults)...)
+	report.Findings = append(report.Findings, p.checkFileManagerCacheLag(currentDefaults)...)
+
+	if hasCommand(p.runner, "xdg-settings") {
+		desktopBrowser, err := p.runner.Run(ctx, "xdg-settings", "get", "default-web-browser")
+		if err == nil && desktopBrowser != "" && httpsApp != "" && desktopBrowser != httpsApp {
+			report.Findings = append(report.Findings, DoctorFinding{
+				ID:          "L25",
+				Severity:    "warning",
+				Summary:     "Desktop browser setting differs from MIME browser default",
+				Details:     fmt.Sprintf("xdg-settings=%q https=%q", desktopBrowser, httpsApp),
+				Remediation: "Run dfx set --browser --app <desktop-id> to synchronize xdg-settings and MIME defaults.",
+			})
+		}
+	}
+
+	hasPortal := hasCommand(p.runner, "xdg-desktop-portal")
+	hasBackend := hasCommand(p.runner, "xdg-desktop-portal-gtk") ||
+		hasCommand(p.runner, "xdg-desktop-portal-kde") ||
+		hasCommand(p.runner, "xdg-desktop-portal-wlr") ||
+		hasCommand(p.runner, "xdg-desktop-portal-hyprland")
+	if !hasPortal || !hasBackend {
+		report.Findings = append(report.Findings, DoctorFinding{
+			ID:       "L08",
+			Severity: "warning",
+			Summary:  "Portal stack appears incomplete for sandboxed app OpenURI flows",
+			Details:  fmt.Sprintf("xdg-desktop-portal=%t backend=%t", hasPortal, hasBackend),
+			Remediation: "Install xdg-desktop-portal and a desktop backend " +
+				"(gtk/kde/wlr/hyprland) used by your session.",
+		})
+	}
+
+	if len(report.Findings) != 0 {
+		for _, finding := range report.Findings {
+			if finding.Severity == "error" {
+				report.Healthy = false
+				return report, nil
+			}
+		}
+		report.Healthy = true
+	}
+	return report, nil
+}
+
+func (p linuxProvider) doctorFixBrowser(ctx context.Context, dryRun bool) (DoctorFixResult, error) {
+	candidates := []Target{
+		{Kind: KindScheme, Value: "https"},
+		{Kind: KindScheme, Value: "http"},
+		{Kind: KindMIME, Value: "text/html"},
+		{Kind: KindMIME, Value: "application/xhtml+xml"},
+	}
+	var app string
+	for _, target := range candidates {
+		current, _ := p.Get(ctx, target)
+		current = strings.TrimSpace(current)
+		if current != "" && current != "None" && desktopExists(p, current) {
+			app = current
+			break
+		}
+	}
+	if app == "" && hasCommand(p.runner, "xdg-settings") {
+		current, err := p.runner.Run(ctx, "xdg-settings", "get", "default-web-browser")
+		if err == nil {
+			current = strings.TrimSpace(current)
+			if current != "" && current != "None" && desktopExists(p, current) {
+				app = current
+			}
+		}
+	}
+	if app == "" {
+		return DoctorFixResult{}, errors.New("unable to select a valid installed browser desktop id to repair defaults")
+	}
+
+	result, err := p.Set(ctx, Association{Kind: KindBrowser, Value: "default", App: app}, SetOptions{DryRun: dryRun})
+	if err != nil {
+		return DoctorFixResult{Changed: result.Changed, Operations: result.Operations}, err
+	}
+	return DoctorFixResult{Changed: result.Changed, Operations: result.Operations}, nil
+}
+
+func (p linuxProvider) doctorMIME(ctx context.Context, mimeType string) (DoctorReport, error) {
+	report := DoctorReport{
+		Platform: "linux",
+		Scope:    fmt.Sprintf("mime:%s", mimeType),
+		Healthy:  true,
+	}
+
+	if !hasCommand(p.runner, "xdg-mime") {
+		report.Healthy = false
+		report.Findings = append(report.Findings, DoctorFinding{
+			ID:          "L26",
+			Severity:    "error",
+			Summary:     "Required command missing: xdg-mime",
+			Remediation: "Install xdg-utils package for your distribution.",
+		})
+		return report, nil
+	}
+
+	app, err := p.Get(ctx, Target{Kind: KindMIME, Value: mimeType})
+	if err != nil {
+		report.Healthy = false
+		report.Findings = append(report.Findings, DoctorFinding{
+			ID:          "L31",
+			Severity:    "error",
+			Summary:     fmt.Sprintf("Unable to query default handler for %s", mimeType),
+			Details:     err.Error(),
+			Remediation: "Ensure xdg-mime is installed and MIME database is valid.",
+		})
+		return report, nil
+	}
+
+	app = strings.TrimSpace(app)
+	if app == "" || strings.EqualFold(app, "None") {
+		report.Healthy = false
+		report.Findings = append(report.Findings, DoctorFinding{
+			ID:          "L31",
+			Severity:    "error",
+			Summary:     fmt.Sprintf("No default handler set for %s", mimeType),
+			Remediation: fmt.Sprintf("Run dfx set --mime %s --app <desktop-id> to set a default handler.", mimeType),
+		})
+	} else {
+		if !desktopExists(p, app) {
+			report.Healthy = false
+			report.Findings = append(report.Findings, DoctorFinding{
+				ID:          "L31",
+				Severity:    "error",
+				Summary:     fmt.Sprintf("Default handler for %s points to missing desktop file", mimeType),
+				Details:     app,
+				Remediation: "Set the default to an installed desktop id or reinstall the missing app.",
+			})
+		}
+
+		meta, ok := p.desktopMetadata(app)
+		if ok {
+			if _, has := meta.mimeTypes[mimeType]; !has {
+				report.Findings = append(report.Findings, DoctorFinding{
+					ID:          "L31",
+					Severity:    "warning",
+					Summary:     fmt.Sprintf("Desktop entry for %s handler does not declare the MIME type", mimeType),
+					Details:     app,
+					Remediation: "Add the missing MimeType entry to the desktop file and refresh desktop metadata.",
+				})
+			}
+		}
+
+		report.Findings = append(report.Findings, p.checkPrecedenceConflictsForKey(mimeType)...)
+		report.Findings = append(report.Findings, p.checkToolkitDisagreementForKey(ctx, mimeType)...)
+	}
+
+	if len(report.Findings) != 0 {
+		for _, finding := range report.Findings {
+			if finding.Severity == "error" {
+				report.Healthy = false
+				return report, nil
+			}
+		}
+	}
+	return report, nil
+}
+
+func (p linuxProvider) doctorScheme(ctx context.Context, scheme string) (DoctorReport, error) {
+	report := DoctorReport{
+		Platform: "linux",
+		Scope:    fmt.Sprintf("scheme:%s", scheme),
+		Healthy:  true,
+	}
+
+	if !hasCommand(p.runner, "xdg-mime") {
+		report.Healthy = false
+		report.Findings = append(report.Findings, DoctorFinding{
+			ID:          "L26",
+			Severity:    "error",
+			Summary:     "Required command missing: xdg-mime",
+			Remediation: "Install xdg-utils package for your distribution.",
+		})
+		return report, nil
+	}
+
+	key := "x-scheme-handler/" + scheme
+	app, err := p.Get(ctx, Target{Kind: KindScheme, Value: scheme})
+	if err != nil {
+		report.Healthy = false
+		report.Findings = append(report.Findings, DoctorFinding{
+			ID:          "L32",
+			Severity:    "error",
+			Summary:     fmt.Sprintf("Unable to query default handler for %s", scheme),
+			Details:     err.Error(),
+			Remediation: "Ensure xdg-mime is installed and scheme database is valid.",
+		})
+		return report, nil
+	}
+
+	app = strings.TrimSpace(app)
+	if app == "" || strings.EqualFold(app, "None") {
+		report.Healthy = false
+		report.Findings = append(report.Findings, DoctorFinding{
+			ID:          "L32",
+			Severity:    "error",
+			Summary:     fmt.Sprintf("No default handler set for %s", scheme),
+			Remediation: fmt.Sprintf("Run dfx set --scheme %s --app <desktop-id> to set a default handler.", scheme),
+		})
+	} else {
+		if !desktopExists(p, app) {
+			report.Healthy = false
+			report.Findings = append(report.Findings, DoctorFinding{
+				ID:          "L32",
+				Severity:    "error",
+				Summary:     fmt.Sprintf("Default handler for %s points to missing desktop file", scheme),
+				Details:     app,
+				Remediation: "Set the default to an installed desktop id or reinstall the missing app.",
+			})
+		}
+
+		meta, ok := p.desktopMetadata(app)
+		if ok {
+			if !meta.hasURLPlaceholder() {
+				report.Findings = append(report.Findings, DoctorFinding{
+					ID:          "L32",
+					Severity:    "warning",
+					Summary:     fmt.Sprintf("Desktop entry for %s handler lacks URL placeholder", scheme),
+					Details:     app,
+					Remediation: "Ensure Exec includes %u or %U for URL handler compatibility.",
+				})
+			}
+		}
+
+		report.Findings = append(report.Findings, p.checkPrecedenceConflictsForKey(key)...)
+		report.Findings = append(report.Findings, p.checkToolkitDisagreementForKey(ctx, key)...)
+
+		if scheme == "http" || scheme == "https" {
+			report.Findings = append(report.Findings, p.checkPortalMismatchForKey(ctx, key)...)
+		}
+	}
+
+	if len(report.Findings) != 0 {
+		for _, finding := range report.Findings {
+			if finding.Severity == "error" {
+				report.Healthy = false
+				return report, nil
+			}
+		}
+	}
+	return report, nil
+}
+
+func (p linuxProvider) doctorAll(ctx context.Context) (DoctorReport, error) {
+	report := DoctorReport{
+		Platform: "linux",
+		Scope:    "all",
+		Healthy:  true,
+	}
+
+	browserReport, err := p.doctorBrowser(ctx)
+	if err != nil {
+		return report, err
+	}
+	if !browserReport.Healthy {
+		report.Healthy = false
+	}
+	report.Findings = append(report.Findings, browserReport.Findings...)
+
+	const maxAssociations = 50
+	count := 0
+	capped := false
+
+	home, err := p.userHomeDirOrDefault()
+	if err == nil {
+		xdgConfigHome := p.getenvOrDefault("XDG_CONFIG_HOME")
+		if xdgConfigHome == "" {
+			xdgConfigHome = filepath.Join(home, ".config")
+		}
+		userMIMEApps := filepath.Join(xdgConfigHome, "mimeapps.list")
+		content, err := p.readFileOrDefault(userMIMEApps)
+		if err == nil {
+			schemes, mimes := parseMIMEAppsSections(string(content))
+			for _, scheme := range schemes {
+				if count >= maxAssociations {
+					capped = true
+					break
+				}
+				subReport, err := p.doctorScheme(ctx, scheme)
+				if err != nil {
+					continue
+				}
+				if !subReport.Healthy {
+					report.Healthy = false
+				}
+				report.Findings = append(report.Findings, subReport.Findings...)
+				count++
+			}
+			for _, mime := range mimes {
+				if count >= maxAssociations {
+					capped = true
+					break
+				}
+				subReport, err := p.doctorMIME(ctx, mime)
+				if err != nil {
+					continue
+				}
+				if !subReport.Healthy {
+					report.Healthy = false
+				}
+				report.Findings = append(report.Findings, subReport.Findings...)
+				count++
+			}
+		}
+	}
+
+	if capped {
+		report.Findings = append(report.Findings, DoctorFinding{
+			ID:          "L33",
+			Severity:    "warning",
+			Summary:     "Doctor --all capped associations at 50",
+			Details:     "Some associations were not checked to avoid spam.",
+			Remediation: "Run doctor with --mime or --scheme for specific associations.",
+		})
+	}
+
+	return report, nil
+}
+
+func (p linuxProvider) doctorFixMIME(ctx context.Context, mimeType string, dryRun bool) (DoctorFixResult, error) {
+	app, err := p.Get(ctx, Target{Kind: KindMIME, Value: mimeType})
+	if err != nil {
+		return DoctorFixResult{}, err
+	}
+	app = strings.TrimSpace(app)
+	if app != "" && app != "None" && desktopExists(p, app) {
+		return DoctorFixResult{Changed: false}, nil
+	}
+
+	for _, path := range p.mimeappsLookupPaths() {
+		content, err := p.readFileOrDefault(path)
+		if err != nil {
+			continue
+		}
+		if candidate, ok := parseDefaultFromMIMEApps(string(content), mimeType); ok && candidate != "" {
+			candidate = strings.TrimSpace(candidate)
+			if candidate != "" && candidate != "None" && candidate != app && desktopExists(p, candidate) {
+				result, err := p.Set(ctx, Association{Kind: KindMIME, Value: mimeType, App: candidate}, SetOptions{DryRun: dryRun})
+				return DoctorFixResult{Changed: result.Changed, Operations: result.Operations}, err
+			}
+		}
+	}
+
+	return DoctorFixResult{}, fmt.Errorf("no installed handler found for MIME type %s", mimeType)
+}
+
+func (p linuxProvider) doctorFixScheme(ctx context.Context, scheme string, dryRun bool) (DoctorFixResult, error) {
+	key := "x-scheme-handler/" + scheme
+	app, err := p.Get(ctx, Target{Kind: KindScheme, Value: scheme})
+	if err != nil {
+		return DoctorFixResult{}, err
+	}
+	app = strings.TrimSpace(app)
+	if app != "" && app != "None" && desktopExists(p, app) {
+		return DoctorFixResult{Changed: false}, nil
+	}
+
+	for _, path := range p.mimeappsLookupPaths() {
+		content, err := p.readFileOrDefault(path)
+		if err != nil {
+			continue
+		}
+		if candidate, ok := parseDefaultFromMIMEApps(string(content), key); ok && candidate != "" {
+			candidate = strings.TrimSpace(candidate)
+			if candidate != "" && candidate != "None" && candidate != app && desktopExists(p, candidate) {
+				result, err := p.Set(ctx, Association{Kind: KindScheme, Value: scheme, App: candidate}, SetOptions{DryRun: dryRun})
+				return DoctorFixResult{Changed: result.Changed, Operations: result.Operations}, err
+			}
+		}
+	}
+
+	return DoctorFixResult{}, fmt.Errorf("no installed handler found for scheme %s", scheme)
+}
+
+func (p linuxProvider) doctorFixAll(ctx context.Context, dryRun bool) (DoctorFixResult, error) {
+	result := DoctorFixResult{Changed: false}
+
+	browserResult, err := p.doctorFixBrowser(ctx, dryRun)
+	if err != nil {
+		return result, err
+	}
+	result.Changed = result.Changed || browserResult.Changed
+	result.Operations = append(result.Operations, browserResult.Operations...)
+
+	home, err := p.userHomeDirOrDefault()
+	if err != nil {
+		return result, nil
+	}
+
+	xdgConfigHome := p.getenvOrDefault("XDG_CONFIG_HOME")
+	if xdgConfigHome == "" {
+		xdgConfigHome = filepath.Join(home, ".config")
+	}
+	userMIMEApps := filepath.Join(xdgConfigHome, "mimeapps.list")
+	content, err := p.readFileOrDefault(userMIMEApps)
+	if err != nil {
+		return result, nil
+	}
+
+	schemes, mimes := parseMIMEAppsSections(string(content))
+	seen := make(map[string]struct{})
+
+	for _, scheme := range schemes {
+		if _, ok := seen["scheme:"+scheme]; ok {
+			continue
+		}
+		seen["scheme:"+scheme] = struct{}{}
+		subResult, err := p.doctorFixScheme(ctx, scheme, dryRun)
+		if err != nil {
+			continue
+		}
+		result.Changed = result.Changed || subResult.Changed
+		result.Operations = append(result.Operations, subResult.Operations...)
+	}
+
+	for _, mime := range mimes {
+		if _, ok := seen["mime:"+mime]; ok {
+			continue
+		}
+		seen["mime:"+mime] = struct{}{}
+		subResult, err := p.doctorFixMIME(ctx, mime, dryRun)
+		if err != nil {
+			continue
+		}
+		result.Changed = result.Changed || subResult.Changed
+		result.Operations = append(result.Operations, subResult.Operations...)
+	}
+
+	return result, nil
+}
+
+func (p linuxProvider) checkPrecedenceConflictsForKey(key string) []DoctorFinding {
+	seen := map[string]struct{}{}
+	for _, path := range p.mimeappsLookupPaths() {
+		content, err := p.readFileOrDefault(path)
+		if err != nil {
+			continue
+		}
+		if app, ok := parseDefaultFromMIMEApps(string(content), key); ok && app != "" {
+			seen[app] = struct{}{}
+		}
+	}
+	if len(seen) > 1 {
+		return []DoctorFinding{{
+			ID:          "L04",
+			Severity:    "warning",
+			Summary:     "Conflicting defaults found across mimeapps precedence layers",
+			Details:     fmt.Sprintf("%s has %d competing defaults", key, len(seen)),
+			Remediation: "Consolidate defaults in highest-precedence user mimeapps.list.",
+		}}
+	}
+	return nil
+}
+
+func (p linuxProvider) checkToolkitDisagreementForKey(ctx context.Context, key string) []DoctorFinding {
+	if !hasCommand(p.runner, "gio") {
+		return nil
+	}
+	target := Target{Kind: KindMIME, Value: key}
+	if strings.HasPrefix(key, "x-scheme-handler/") {
+		target = Target{Kind: KindScheme, Value: strings.TrimPrefix(key, "x-scheme-handler/")}
+	}
+	xdgApp, err := p.Get(ctx, target)
+	if err != nil {
+		return nil
+	}
+	xdgApp = strings.TrimSpace(xdgApp)
+	if xdgApp == "" || strings.EqualFold(xdgApp, "None") {
+		return nil
+	}
+	gioApp, err := p.gioDefaultForAssociation(ctx, key)
+	if err != nil {
+		return nil
+	}
+	gioApp = strings.TrimSpace(gioApp)
+	if gioApp == "" || strings.EqualFold(gioApp, "None") {
+		return nil
+	}
+	if xdgApp != gioApp {
+		issueID := "L19"
+		if strings.HasPrefix(key, "x-scheme-handler/") {
+			issueID = "L02"
+		}
+		return []DoctorFinding{{
+			ID:          issueID,
+			Severity:    "warning",
+			Summary:     "xdg-mime and GIO report different defaults",
+			Details:     fmt.Sprintf("%s: xdg-mime=%q gio=%q", key, xdgApp, gioApp),
+			Remediation: "Use desktop-specific tools to align xdg and GIO defaults.",
+		}}
+	}
+	return nil
+}
+
+func (p linuxProvider) checkPortalMismatchForKey(ctx context.Context, key string) []DoctorFinding {
+	if !hasCommand(p.runner, "flatpak") || !hasCommand(p.runner, "flatpak-spawn") {
+		return nil
+	}
+	host, err := p.runner.Run(ctx, "flatpak-spawn", "--host", "xdg-mime", "query", "default", key)
+	if err != nil {
+		return nil
+	}
+	local, err := p.runner.Run(ctx, "xdg-mime", "query", "default", key)
+	if err != nil {
+		return nil
+	}
+	host = strings.TrimSpace(host)
+	local = strings.TrimSpace(local)
+	if host == "" || local == "" {
+		return nil
+	}
+	if host != local {
+		return []DoctorFinding{{
+			ID:          "L07",
+			Severity:    "warning",
+			Summary:     "Flatpak portal and host defaults are misaligned",
+			Details:     fmt.Sprintf("%s: host=%q local=%q", key, host, local),
+			Remediation: "Align host and Flatpak-context registration for the same identifiers.",
+		}}
+	}
+	return nil
+}
+
+func parseMIMEAppsSections(content string) (schemes []string, mimes []string) {
+	inDefaults := false
+	seen := make(map[string]struct{})
+	for _, raw := range strings.Split(content, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			inDefaults = strings.EqualFold(line, "[Default Applications]")
+			continue
+		}
+		if !inDefaults {
+			continue
+		}
+		left, _, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key := strings.TrimSpace(left)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		if strings.HasPrefix(key, "x-scheme-handler/") {
+			scheme := strings.TrimPrefix(key, "x-scheme-handler/")
+			if scheme != "" {
+				schemes = append(schemes, scheme)
+			}
+		} else if strings.Contains(key, "/") {
+			mimes = append(mimes, key)
+		}
+	}
+	return schemes, mimes
 }

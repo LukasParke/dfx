@@ -718,6 +718,42 @@ func TestLinuxGetUsesMIMEAppsPrecedence(t *testing.T) {
 	}
 }
 
+func TestLinuxContentTypeNormalizesToMIME(t *testing.T) {
+	provider := linuxProvider{
+		runner: &fakeRunner{paths: map[string]bool{}},
+		readFile: func(path string) ([]byte, error) {
+			switch path {
+			case "/home/test/.config/mimeapps.list":
+				return []byte("[Default Applications]\ntext/html=firefox.desktop;\n"), nil
+			default:
+				return nil, errors.New("not found")
+			}
+		},
+		userHomeDir: func() (string, error) { return "/home/test", nil },
+		getenv: func(key string) string {
+			if key == "XDG_CONFIG_HOME" {
+				return "/home/test/.config"
+			}
+			return ""
+		},
+	}
+
+	got, err := provider.Get(context.Background(), Target{Kind: KindContentType, Value: "text/html"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "firefox.desktop" {
+		t.Fatalf("got=%q", got)
+	}
+}
+
+func TestLinuxContentTypePassthroughWhenNotValidMIME(t *testing.T) {
+	target := linuxNormalizeContentTypeToMIME(Target{Kind: KindContentType, Value: "public.html"})
+	if target.Kind != KindContentType || target.Value != "public.html" {
+		t.Fatalf("expected passthrough for non-MIME content type, got %+v", target)
+	}
+}
+
 func TestLinuxDoctorBrowserHealthy(t *testing.T) {
 	runner := &fakeRunner{
 		paths: map[string]bool{
@@ -966,3 +1002,260 @@ func (f fakeFileInfo) Mode() os.FileMode  { return f.mode }
 func (f fakeFileInfo) ModTime() time.Time { return f.mod }
 func (f fakeFileInfo) IsDir() bool        { return false }
 func (f fakeFileInfo) Sys() any           { return &syscall.Stat_t{Uid: f.uid} }
+
+
+func TestLinuxDoctorMIME(t *testing.T) {
+	runner := &fakeRunner{
+		paths: map[string]bool{"xdg-mime": true},
+		outputs: map[string]string{
+			"xdg-mime query default text/plain": "gedit.desktop",
+		},
+	}
+	provider := linuxProvider{
+		runner:   runner,
+		readFile: func(string) ([]byte, error) { return nil, errors.New("not found") },
+		statFile: func(path string) (os.FileInfo, error) {
+			if strings.HasSuffix(path, "/usr/share/applications/gedit.desktop") {
+				return fakeFileInfo{mode: 0o644, uid: 1000}, nil
+			}
+			return nil, errors.New("not found")
+		},
+		userHomeDir: func() (string, error) { return "/home/test", nil },
+		getenv:      func(string) string { return "" },
+	}
+	report, err := provider.Doctor(context.Background(), DoctorOptions{MIME: "text/plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Healthy {
+		t.Fatalf("expected healthy MIME report, findings=%v", report.Findings)
+	}
+	if report.Scope != "mime:text/plain" {
+		t.Fatalf("unexpected scope: %s", report.Scope)
+	}
+}
+
+func TestLinuxDoctorScheme(t *testing.T) {
+	runner := &fakeRunner{
+		paths: map[string]bool{"xdg-mime": true},
+		outputs: map[string]string{
+			"xdg-mime query default x-scheme-handler/mailto": "thunderbird.desktop",
+		},
+	}
+	provider := linuxProvider{
+		runner:   runner,
+		readFile: func(string) ([]byte, error) { return nil, errors.New("not found") },
+		statFile: func(path string) (os.FileInfo, error) {
+			if strings.HasSuffix(path, "/usr/share/applications/thunderbird.desktop") {
+				return fakeFileInfo{mode: 0o644, uid: 1000}, nil
+			}
+			return nil, errors.New("not found")
+		},
+		userHomeDir: func() (string, error) { return "/home/test", nil },
+		getenv:      func(string) string { return "" },
+	}
+	report, err := provider.Doctor(context.Background(), DoctorOptions{Scheme: "mailto"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Healthy {
+		t.Fatalf("expected healthy scheme report, findings=%v", report.Findings)
+	}
+	if report.Scope != "scheme:mailto" {
+		t.Fatalf("unexpected scope: %s", report.Scope)
+	}
+}
+
+func TestLinuxDoctorContentTypeDelegatesToMIME(t *testing.T) {
+	runner := &fakeRunner{
+		paths: map[string]bool{"xdg-mime": true},
+		outputs: map[string]string{
+			"xdg-mime query default text/html": "firefox.desktop",
+		},
+	}
+	provider := linuxProvider{
+		runner:   runner,
+		readFile: func(string) ([]byte, error) { return nil, errors.New("not found") },
+		statFile: func(path string) (os.FileInfo, error) {
+			if strings.HasSuffix(path, "/usr/share/applications/firefox.desktop") {
+				return fakeFileInfo{mode: 0o644, uid: 1000}, nil
+			}
+			return nil, errors.New("not found")
+		},
+		userHomeDir: func() (string, error) { return "/home/test", nil },
+		getenv:      func(string) string { return "" },
+	}
+	report, err := provider.Doctor(context.Background(), DoctorOptions{ContentType: "text/html"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Healthy {
+		t.Fatalf("expected healthy report, findings=%v", report.Findings)
+	}
+	if report.Scope != "mime:text/html" {
+		t.Fatalf("unexpected scope: %s", report.Scope)
+	}
+}
+
+func TestLinuxDoctorContentTypeRejectsNonMIME(t *testing.T) {
+	provider := linuxProvider{runner: &fakeRunner{}}
+	_, err := provider.Doctor(context.Background(), DoctorOptions{ContentType: "public.html"})
+	if err == nil {
+		t.Fatal("expected error for non-MIME content type")
+	}
+	if !strings.Contains(err.Error(), "Linux has no separate content-type namespace") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLinuxDoctorAll(t *testing.T) {
+	runner := &fakeRunner{
+		paths: map[string]bool{
+			"xdg-mime":     true,
+			"xdg-settings": true,
+		},
+		outputs: map[string]string{
+			"xdg-settings get default-web-browser":            "firefox.desktop",
+			"xdg-mime query default x-scheme-handler/http":    "firefox.desktop",
+			"xdg-mime query default x-scheme-handler/https":   "firefox.desktop",
+			"xdg-mime query default text/html":                "firefox.desktop",
+			"xdg-mime query default application/xhtml+xml":    "firefox.desktop",
+			"xdg-mime query default x-scheme-handler/mailto":  "thunderbird.desktop",
+		},
+	}
+	provider := linuxProvider{
+		runner: runner,
+		readFile: func(path string) ([]byte, error) {
+			if strings.HasSuffix(path, "/home/test/.config/mimeapps.list") {
+				return []byte("[Default Applications]\nx-scheme-handler/mailto=thunderbird.desktop;\n"), nil
+			}
+			return nil, errors.New("not found")
+		},
+		statFile: func(path string) (os.FileInfo, error) {
+			if strings.HasSuffix(path, "/usr/share/applications/firefox.desktop") ||
+				strings.HasSuffix(path, "/usr/share/applications/thunderbird.desktop") {
+				return fakeFileInfo{mode: 0o644, uid: 1000}, nil
+			}
+			return nil, errors.New("not found")
+		},
+		userHomeDir: func() (string, error) { return "/home/test", nil },
+		getenv: func(key string) string {
+			if key == "XDG_CONFIG_HOME" {
+				return "/home/test/.config"
+			}
+			return ""
+		},
+	}
+	report, err := provider.Doctor(context.Background(), DoctorOptions{All: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Healthy {
+		t.Fatalf("expected healthy all report, findings=%v", report.Findings)
+	}
+	if report.Scope != "all" {
+		t.Fatalf("unexpected scope: %s", report.Scope)
+	}
+}
+
+func TestLinuxDoctorFixMIME(t *testing.T) {
+	runner := &fakeRunner{
+		paths: map[string]bool{"xdg-mime": true},
+		outputs: map[string]string{
+			"xdg-mime query default text/plain": "missing.desktop",
+		},
+	}
+	provider := linuxProvider{
+		runner:   runner,
+		readFile: func(string) ([]byte, error) { return nil, errors.New("not found") },
+		statFile: func(path string) (os.FileInfo, error) {
+			if strings.HasSuffix(path, "/usr/share/applications/gedit.desktop") {
+				return fakeFileInfo{mode: 0o644, uid: 1000}, nil
+			}
+			return nil, errors.New("not found")
+		},
+		userHomeDir: func() (string, error) { return "/home/test", nil },
+		getenv:      func(string) string { return "" },
+	}
+	_, err := provider.DoctorFix(context.Background(), DoctorFixOptions{MIME: "text/plain"})
+	if err == nil {
+		t.Fatal("expected error when no installed handler found")
+	}
+
+	runner2 := &fakeRunner{
+		paths: map[string]bool{"xdg-mime": true},
+		outputs: map[string]string{
+			"xdg-mime query default text/plain": "gedit.desktop",
+		},
+	}
+	provider2 := linuxProvider{
+		runner:   runner2,
+		readFile: func(string) ([]byte, error) { return nil, errors.New("not found") },
+		statFile: func(path string) (os.FileInfo, error) {
+			if strings.HasSuffix(path, "/usr/share/applications/gedit.desktop") {
+				return fakeFileInfo{mode: 0o644, uid: 1000}, nil
+			}
+			return nil, errors.New("not found")
+		},
+		userHomeDir: func() (string, error) { return "/home/test", nil },
+		getenv:      func(string) string { return "" },
+	}
+	result, err := provider2.DoctorFix(context.Background(), DoctorFixOptions{MIME: "text/plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Changed {
+		t.Fatal("expected no change when handler is already installed")
+	}
+}
+
+func TestLinuxDoctorFixScheme(t *testing.T) {
+	runner := &fakeRunner{
+		paths: map[string]bool{"xdg-mime": true},
+		outputs: map[string]string{
+			"xdg-mime query default x-scheme-handler/mailto": "missing.desktop",
+		},
+	}
+	provider := linuxProvider{
+		runner:   runner,
+		readFile: func(string) ([]byte, error) { return nil, errors.New("not found") },
+		statFile: func(path string) (os.FileInfo, error) {
+			if strings.HasSuffix(path, "/usr/share/applications/thunderbird.desktop") {
+				return fakeFileInfo{mode: 0o644, uid: 1000}, nil
+			}
+			return nil, errors.New("not found")
+		},
+		userHomeDir: func() (string, error) { return "/home/test", nil },
+		getenv:      func(string) string { return "" },
+	}
+	_, err := provider.DoctorFix(context.Background(), DoctorFixOptions{Scheme: "mailto"})
+	if err == nil {
+		t.Fatal("expected error when no installed handler found")
+	}
+
+	runner2 := &fakeRunner{
+		paths: map[string]bool{"xdg-mime": true},
+		outputs: map[string]string{
+			"xdg-mime query default x-scheme-handler/mailto": "thunderbird.desktop",
+		},
+	}
+	provider2 := linuxProvider{
+		runner:   runner2,
+		readFile: func(string) ([]byte, error) { return nil, errors.New("not found") },
+		statFile: func(path string) (os.FileInfo, error) {
+			if strings.HasSuffix(path, "/usr/share/applications/thunderbird.desktop") {
+				return fakeFileInfo{mode: 0o644, uid: 1000}, nil
+			}
+			return nil, errors.New("not found")
+		},
+		userHomeDir: func() (string, error) { return "/home/test", nil },
+		getenv:      func(string) string { return "" },
+	}
+	result, err := provider2.DoctorFix(context.Background(), DoctorFixOptions{Scheme: "mailto"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Changed {
+		t.Fatal("expected no change when handler is already installed")
+	}
+}

@@ -1203,3 +1203,142 @@ func TestDarwinChromiumProfileSignals(t *testing.T) {
 		t.Fatalf("signals=%v", signals)
 	}
 }
+
+func TestDarwinContentTypeTargetMatchesDirectUTI(t *testing.T) {
+	provider, _ := darwinDoctorProviderWithHandlers(t,
+		map[string]bool{"plutil": true},
+		`{"LSHandlers":[`+
+			`{"LSHandlerURLScheme":"http","LSHandlerRoleAll":"com.example.browser"},`+
+			`{"LSHandlerURLScheme":"https","LSHandlerRoleAll":"com.example.browser"},`+
+			`{"LSHandlerContentType":"public.html","LSHandlerRoleAll":"com.example.browser"},`+
+			`{"LSHandlerContentType":"public.xhtml","LSHandlerRoleAll":"com.example.browser"}`+
+			`]}`,
+	)
+
+	report, err := provider.Doctor(context.Background(), DoctorOptions{Browser: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Healthy {
+		t.Fatalf("expected healthy report, findings=%v", report.Findings)
+	}
+}
+
+func TestDarwinGetMapsMIMEToContentType(t *testing.T) {
+	provider := darwinProvider{runner: &darwinFakeRunner{paths: map[string]bool{"duti": true},
+		outputs: map[string]string{
+			"duti -q uti text/html": "public.html\n",
+		},
+	}}
+	got, err := provider.Get(context.Background(), Target{Kind: KindMIME, Value: "text/html"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "public.html" {
+		t.Fatalf("got=%q", got)
+	}
+}
+
+func TestDarwinDoctorContentType(t *testing.T) {
+	provider, _ := darwinDoctorProviderWithHandlers(t,
+		map[string]bool{"plutil": true},
+		`{"LSHandlers":[`+
+			`{"LSHandlerContentType":"public.plain-text","LSHandlerRoleAll":"com.example.editor","LSHandlerRoleViewer":"com.other.editor"}`+
+			`]}`,
+	)
+	report, err := provider.Doctor(context.Background(), DoctorOptions{ContentType: "public.plain-text"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasDarwinFindingID(report.Findings, "M31") {
+		t.Fatalf("expected M31 finding, got %#v", report.Findings)
+	}
+	if report.Scope != "content-type:public.plain-text" {
+		t.Fatalf("scope=%q", report.Scope)
+	}
+}
+
+func TestDarwinDoctorMIME(t *testing.T) {
+	provider, _ := darwinDoctorProviderWithHandlers(t,
+		map[string]bool{"plutil": true},
+		`{"LSHandlers":[`+
+			`{"LSHandlerContentType":"text/plain","LSHandlerRoleAll":"com.example.editor"}`+
+			`]}`,
+	)
+	report, err := provider.Doctor(context.Background(), DoctorOptions{MIME: "text/plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Scope != "mime:text/plain" {
+		t.Fatalf("scope=%q", report.Scope)
+	}
+	if !report.Healthy {
+		t.Fatalf("expected healthy report, findings=%v", report.Findings)
+	}
+}
+
+func TestDarwinDoctorScheme(t *testing.T) {
+	provider, _ := darwinDoctorProviderWithHandlers(t,
+		map[string]bool{"plutil": true},
+		`{"LSHandlers":[`+
+			`{"LSHandlerURLScheme":"myapp","LSHandlerRoleAll":"com.example.app","LSHandlerRoleViewer":"com.other.app"}`+
+			`]}`,
+	)
+	report, err := provider.Doctor(context.Background(), DoctorOptions{Scheme: "myapp"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasDarwinFindingID(report.Findings, "M32") {
+		t.Fatalf("expected M32 finding, got %#v", report.Findings)
+	}
+	if report.Scope != "scheme:myapp" {
+		t.Fatalf("scope=%q", report.Scope)
+	}
+}
+
+func TestDarwinDoctorAll(t *testing.T) {
+	provider, _ := darwinDoctorProviderWithHandlers(t,
+		map[string]bool{"plutil": true},
+		`{"LSHandlers":[`+
+			`{"LSHandlerURLScheme":"http","LSHandlerRoleAll":"com.example.browser"},`+
+			`{"LSHandlerURLScheme":"https","LSHandlerRoleAll":"com.example.browser"},`+
+			`{"LSHandlerContentType":"text/html","LSHandlerRoleAll":"com.example.browser"},`+
+			`{"LSHandlerContentType":"application/xhtml+xml","LSHandlerRoleAll":"com.example.browser"},`+
+			`{"LSHandlerURLScheme":"myapp","LSHandlerRoleAll":"com.example.app"},`+
+			`{"LSHandlerContentType":"public.plain-text","LSHandlerRoleAll":"com.example.editor"}`+
+			`]}`,
+	)
+	report, err := provider.Doctor(context.Background(), DoctorOptions{All: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Scope != "all" {
+		t.Fatalf("scope=%q", report.Scope)
+	}
+	if !report.Healthy {
+		t.Fatalf("expected healthy all-report, findings=%v", report.Findings)
+	}
+	if !hasDarwinFindingID(report.Findings, "M19") {
+		t.Fatalf("expected M19 finding from sub-doctors, got %#v", report.Findings)
+	}
+}
+
+func TestDarwinDoctorFixContentType(t *testing.T) {
+	provider, _ := darwinDoctorProviderWithHandlers(t,
+		map[string]bool{"plutil": true},
+		`{"LSHandlers":[`+
+			`{"LSHandlerContentType":"public.plain-text","LSHandlerRoleAll":"com.example.editor"}`+
+			`]}`,
+	)
+	result, err := provider.DoctorFix(context.Background(), DoctorFixOptions{ContentType: "public.plain-text", DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Changed {
+		t.Fatal("dry-run fix should not report changed")
+	}
+	joined := strings.Join(result.Operations, "\n")
+	if !strings.Contains(joined, "public.plain-text") {
+		t.Fatalf("missing content-type in operations:\n%s", joined)
+	}
+}

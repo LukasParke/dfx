@@ -155,6 +155,10 @@ func doctor(ctx context.Context, provider defaults.Provider, args []string, stdo
 		fs.SetOutput(stderr)
 	}
 	browser := fs.Bool("browser", false, "Run browser-default diagnostics")
+	mime := fs.String("mime", "", "Run MIME-type diagnostics (use '*' for all configured MIME types)")
+	scheme := fs.String("scheme", "", "Run URL-scheme diagnostics (use '*' for all configured schemes)")
+	contentType := fs.String("content-type", "", "Run content-type diagnostics (UTI on macOS, ProgID/ext on Windows; use '*' for all)")
+	all := fs.Bool("all", false, "Run diagnostics for browser and all configured associations")
 	asJSON := fs.Bool("json", false, "Print doctor output as JSON")
 	strict := fs.Bool("strict", false, "Return non-zero when warnings are present")
 	fix := fs.Bool("fix", false, "Apply safe automated remediations for the selected scope")
@@ -165,14 +169,40 @@ func doctor(ctx context.Context, provider defaults.Provider, args []string, stdo
 	if fs.NArg() != 0 {
 		return commandError(stdout, stderr, *asJSON, "doctor does not accept positional arguments", 2)
 	}
-	if !*browser {
-		return commandError(stdout, stderr, *asJSON, "doctor currently requires --browser", 2)
+	selected := 0
+	if *browser {
+		selected++
+	}
+	if strings.TrimSpace(*mime) != "" {
+		selected++
+	}
+	if strings.TrimSpace(*scheme) != "" {
+		selected++
+	}
+	if strings.TrimSpace(*contentType) != "" {
+		selected++
+	}
+	if *all {
+		selected++
+	}
+	if selected == 0 {
+		return commandError(stdout, stderr, *asJSON, "doctor requires exactly one scope flag; one of --browser, --mime, --scheme, --content-type, or --all is required", 2)
+	}
+	if selected > 1 {
+		return commandError(stdout, stderr, *asJSON, "--browser, --mime, --scheme, --content-type, and --all are mutually exclusive", 2)
 	}
 	if *dryRun && !*fix {
 		return commandError(stdout, stderr, *asJSON, "--dry-run requires --fix", 2)
 	}
 
-	report, err := provider.Doctor(ctx, defaults.DoctorOptions{Browser: *browser})
+	options := defaults.DoctorOptions{
+		Browser:     *browser,
+		MIME:        strings.TrimSpace(*mime),
+		Scheme:      strings.TrimSpace(*scheme),
+		ContentType: strings.TrimSpace(*contentType),
+		All:         *all,
+	}
+	report, err := provider.Doctor(ctx, options)
 	if err != nil {
 		return commandError(stdout, stderr, *asJSON, err.Error(), 1)
 	}
@@ -180,7 +210,15 @@ func doctor(ctx context.Context, provider defaults.Provider, args []string, stdo
 	var fixResult defaults.DoctorFixResult
 	var fixErr error
 	if *fix {
-		fixResult, fixErr = provider.DoctorFix(ctx, defaults.DoctorFixOptions{Browser: *browser, DryRun: *dryRun})
+		fixOptions := defaults.DoctorFixOptions{
+			Browser:     *browser,
+			MIME:        strings.TrimSpace(*mime),
+			Scheme:      strings.TrimSpace(*scheme),
+			ContentType: strings.TrimSpace(*contentType),
+			All:         *all,
+			DryRun:      *dryRun,
+		}
+		fixResult, fixErr = provider.DoctorFix(ctx, fixOptions)
 	}
 
 	shouldFail := fixErr != nil || !report.Healthy || (*strict && doctorHasStrictFinding(report.Findings))
@@ -346,11 +384,12 @@ func openTest(ctx context.Context, provider defaults.Provider, args []string, st
 	}
 	mime := fs.String("mime", "", "MIME type to verify")
 	scheme := fs.String("scheme", "", "URL scheme or URI to verify")
+	contentType := fs.String("content-type", "", "Content type to verify (UTI on macOS, ProgID or extension on Windows)")
 	browser := fs.Bool("browser", false, "Verify the default browser association")
 	callback := fs.Bool("callback", false, "Verify the callback scheme from DFX_CALLBACK_SCHEME")
 	expected := fs.String("expected", "", "Expected application identifier")
 	launch := fs.Bool("launch", false, "Explicitly launch the resolved target after resolution checks pass")
-	path := fs.String("path", "", "File path to launch when verifying a MIME handler")
+	path := fs.String("path", "", "File path to launch when verifying a MIME or content-type handler")
 	asJSON := fs.Bool("json", false, "Print open-test output as JSON")
 	if err := fs.Parse(args); err != nil {
 		return commandError(stdout, stderr, wantsJSON, err.Error(), 2)
@@ -359,7 +398,7 @@ func openTest(ctx context.Context, provider defaults.Provider, args []string, st
 		return commandError(stdout, stderr, *asJSON, "open-test does not accept positional arguments", 2)
 	}
 
-	target, err := openTestTargetFromFlags(*mime, *scheme, *browser, *callback)
+	target, err := openTestTargetFromFlags(*mime, *scheme, *contentType, *browser, *callback)
 	if err != nil {
 		return openTestError(stdout, stderr, *asJSON, err.Error(), 2, nil)
 	}
@@ -388,12 +427,12 @@ func openTest(ctx context.Context, provider defaults.Provider, args []string, st
 		if exitCode != 0 {
 			report.Evidence = append(report.Evidence, "launch skipped because expected handler did not match")
 		} else {
-			if target.Kind == defaults.KindMIME {
+			if target.Kind == defaults.KindMIME || target.Kind == defaults.KindContentType {
 				if errMessage, errCode := validateOpenTestMimeLaunchPath(*path); errMessage != "" {
 					return openTestError(stdout, stderr, *asJSON, errMessage, errCode, &target)
 				}
 			}
-			if strings.TrimSpace(*path) != "" && target.Kind != defaults.KindMIME {
+			if strings.TrimSpace(*path) != "" && target.Kind != defaults.KindMIME && target.Kind != defaults.KindContentType {
 				report.Evidence = append(report.Evidence, "provided --path is ignored for non-MIME launch targets")
 			}
 			subject, err := openTestLaunchSubject(target, *scheme, *callback, *path)
@@ -2296,6 +2335,12 @@ func windowsPolicyGPORestore(args []string, stdout, stderr io.Writer) int {
 	if fs.NArg() != 0 {
 		return commandError(stdout, stderr, *asJSON, "windows-policy gpo-restore does not accept positional arguments", 2)
 	}
+	if strings.TrimSpace(*gpoName) == "" && strings.TrimSpace(*gpoGUID) == "" {
+		return commandError(stdout, stderr, *asJSON, "GPO restore requires --gpo-name or --gpo-guid", 2)
+	}
+	if strings.TrimSpace(*path) == "" {
+		return commandError(stdout, stderr, *asJSON, "GPO restore requires --path", 2)
+	}
 	result, err := defaults.RestoreWindowsDefaultAssociationsPolicyGPO(context.Background(), defaults.WindowsPolicyGPORestoreOptions{
 		GPOName: *gpoName,
 		GPOGUID: *gpoGUID,
@@ -2782,7 +2827,7 @@ func windowsPolicyMerge(args []string, stdout, stderr io.Writer) int {
 	if strings.TrimSpace(*progID) == "" {
 		return commandError(stdout, stderr, *asJSON, "windows-policy merge requires --prog-id", 2)
 	}
-	target, err := targetFromFlags(*mime, *scheme, *browser)
+	target, err := targetFromFlags(*mime, *scheme, "", *browser)
 	if err != nil {
 		return commandError(stdout, stderr, *asJSON, err.Error(), 2)
 	}
@@ -3993,6 +4038,7 @@ func get(ctx context.Context, provider defaults.Provider, args []string, stdout,
 	}
 	mime := fs.String("mime", "", "MIME type to inspect")
 	scheme := fs.String("scheme", "", "URL scheme to inspect")
+	contentType := fs.String("content-type", "", "Content type to inspect (UTI on macOS, ProgID or extension on Windows)")
 	browser := fs.Bool("browser", false, "Inspect the default browser")
 	asJSON := fs.Bool("json", false, "Print get output as JSON")
 	if err := fs.Parse(args); err != nil {
@@ -4002,10 +4048,10 @@ func get(ctx context.Context, provider defaults.Provider, args []string, stdout,
 		return commandError(stdout, stderr, *asJSON, "get does not accept positional arguments", 2)
 	}
 
-	target, err := targetFromFlags(*mime, *scheme, *browser)
+	target, err := targetFromFlags(*mime, *scheme, *contentType, *browser)
 	if err != nil {
-		if err.Error() == "one of --mime, --scheme, or --browser is required" {
-			return commandError(stdout, stderr, *asJSON, "get requires exactly one target selector; one of --mime, --scheme, or --browser is required", 2)
+		if err.Error() == "one of --mime, --scheme, --content-type, or --browser is required" {
+			return commandError(stdout, stderr, *asJSON, "get requires exactly one target selector; one of --mime, --scheme, --content-type, or --browser is required", 2)
 		}
 		return commandError(stdout, stderr, *asJSON, err.Error(), 2)
 	}
@@ -4049,9 +4095,11 @@ func set(ctx context.Context, provider defaults.Provider, args []string, stdout,
 	}
 	mime := fs.String("mime", "", "MIME type to update")
 	scheme := fs.String("scheme", "", "URL scheme to update")
+	contentType := fs.String("content-type", "", "Content type to update (UTI on macOS, ProgID or extension on Windows)")
 	browser := fs.Bool("browser", false, "Update all default browser associations")
 	app := fs.String("app", "", "Application identifier for the current platform")
 	dryRun := fs.Bool("dry-run", false, "Print planned operations without applying them")
+	system := fs.Bool("system", false, "Write to system-level defaults (requires root on Linux)")
 	asJSON := fs.Bool("json", false, "Print set output as JSON")
 	if err := fs.Parse(flagArgs); err != nil {
 		return commandError(stdout, stderr, wantsJSON, err.Error(), 2)
@@ -4066,7 +4114,7 @@ func set(ctx context.Context, provider defaults.Provider, args []string, stdout,
 		return commandError(stdout, stderr, *asJSON, "set accepts either --app or one positional app query, not both", 2)
 	}
 
-	target, err := targetFromFlags(*mime, *scheme, *browser)
+	target, err := targetFromFlags(*mime, *scheme, *contentType, *browser)
 	if err != nil {
 		return mutationValidationError(stdout, stderr, *asJSON, err.Error(), 2, *dryRun, nil)
 	}
@@ -4089,7 +4137,7 @@ func set(ctx context.Context, provider defaults.Provider, args []string, stdout,
 		})
 	}
 
-	result, err := provider.Set(ctx, association, defaults.SetOptions{DryRun: *dryRun})
+	result, err := provider.Set(ctx, association, defaults.SetOptions{DryRun: *dryRun, System: *system})
 	if err != nil {
 		return mutationError(stdout, stderr, *asJSON, err.Error(), 1, *dryRun, result.Changed, result, map[string]any{
 			"association":    association,
@@ -4173,6 +4221,7 @@ func apply(ctx context.Context, provider defaults.Provider, args []string, stdou
 		fs.SetOutput(stderr)
 	}
 	dryRun := fs.Bool("dry-run", false, "Print planned operations without applying them")
+	system := fs.Bool("system", false, "Write to system-level defaults (requires root on Linux)")
 	asJSON := fs.Bool("json", false, "Print apply output as JSON")
 	if err := fs.Parse(args); err != nil {
 		return commandError(stdout, stderr, wantsJSON, err.Error(), 2)
@@ -4220,7 +4269,7 @@ func apply(ctx context.Context, provider defaults.Provider, args []string, stdou
 			})
 		}
 		association.App = resolution.App
-		result, err := provider.Set(ctx, association, defaults.SetOptions{DryRun: *dryRun})
+		result, err := provider.Set(ctx, association, defaults.SetOptions{DryRun: *dryRun, System: *system})
 		if err != nil {
 			changed := result.Changed
 			for _, previous := range results {
@@ -4615,17 +4664,22 @@ func applyTargetKeys(association defaults.Association) []string {
 		default:
 			return []string{target.String()}
 		}
+	case defaults.KindContentType:
+		return []string{target.String()}
 	default:
 		return []string{target.String()}
 	}
 }
 
-func openTestTargetFromFlags(mime, scheme string, browser, callback bool) (defaults.Target, error) {
+func openTestTargetFromFlags(mime, scheme, contentType string, browser, callback bool) (defaults.Target, error) {
 	selected := 0
 	if strings.TrimSpace(mime) != "" {
 		selected++
 	}
 	if strings.TrimSpace(scheme) != "" {
+		selected++
+	}
+	if strings.TrimSpace(contentType) != "" {
 		selected++
 	}
 	if browser {
@@ -4635,25 +4689,25 @@ func openTestTargetFromFlags(mime, scheme string, browser, callback bool) (defau
 		selected++
 	}
 	if selected == 0 {
-		return defaults.Target{}, errors.New("one of --mime, --scheme, --browser, or --callback is required")
+		return defaults.Target{}, errors.New("one of --mime, --scheme, --content-type, --browser, or --callback is required")
 	}
 	if selected > 1 {
-		return defaults.Target{}, errors.New("--mime, --scheme, --browser, and --callback are mutually exclusive")
+		return defaults.Target{}, errors.New("--mime, --scheme, --content-type, --browser, and --callback are mutually exclusive")
 	}
 	if callback {
 		callbackScheme := strings.TrimSpace(os.Getenv("DFX_CALLBACK_SCHEME"))
 		if callbackScheme == "" {
 			return defaults.Target{}, errors.New("--callback requires DFX_CALLBACK_SCHEME")
 		}
-		return targetFromFlags("", callbackScheme, false)
+		return targetFromFlags("", callbackScheme, "", false)
 	}
-	return targetFromFlags(mime, scheme, browser)
+	return targetFromFlags(mime, scheme, contentType, browser)
 }
 
 func openTestLaunchSubject(target defaults.Target, rawScheme string, callback bool, path string) (string, error) {
 	target = target.Normalized()
 	switch target.Kind {
-	case defaults.KindMIME:
+	case defaults.KindMIME, defaults.KindContentType:
 		path = expandPolicyFilePath(path)
 		return path, nil
 	case defaults.KindBrowser:
@@ -4715,9 +4769,10 @@ func openTestLauncherCommand(subject string) (string, []string) {
 	}
 }
 
-func targetFromFlags(mime, scheme string, browser bool) (defaults.Target, error) {
+func targetFromFlags(mime, scheme, contentType string, browser bool) (defaults.Target, error) {
 	mime = strings.TrimSpace(mime)
 	scheme = strings.TrimSpace(scheme)
+	contentType = strings.TrimSpace(contentType)
 	selected := 0
 	if mime != "" {
 		selected++
@@ -4725,17 +4780,27 @@ func targetFromFlags(mime, scheme string, browser bool) (defaults.Target, error)
 	if scheme != "" {
 		selected++
 	}
+	if contentType != "" {
+		selected++
+	}
 	if browser {
 		selected++
 	}
 	if selected == 0 {
-		return defaults.Target{}, errors.New("one of --mime, --scheme, or --browser is required")
+		return defaults.Target{}, errors.New("one of --mime, --scheme, --content-type, or --browser is required")
 	}
 	if selected > 1 {
-		return defaults.Target{}, errors.New("--mime, --scheme, and --browser are mutually exclusive")
+		return defaults.Target{}, errors.New("--mime, --scheme, --content-type, and --browser are mutually exclusive")
 	}
 	if mime != "" {
 		target := (defaults.Target{Kind: defaults.KindMIME, Value: mime}).Normalized()
+		if err := target.Validate(); err != nil {
+			return defaults.Target{}, err
+		}
+		return target, nil
+	}
+	if contentType != "" {
+		target := (defaults.Target{Kind: defaults.KindContentType, Value: contentType}).Normalized()
 		if err := target.Validate(); err != nil {
 			return defaults.Target{}, err
 		}

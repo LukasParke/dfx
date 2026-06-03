@@ -89,8 +89,18 @@ func TestTargetAndAssociationNormalizeInputs(t *testing.T) {
 	if target.Kind != KindBrowser || target.Value != "default" {
 		t.Fatalf("browser target=%+v", target)
 	}
+	target = Target{Kind: KindContentType, Value: "Public.HTML"}.Normalized()
+	if target.Kind != KindContentType || target.Value != "public.html" {
+		t.Fatalf("content-type target=%+v", target)
+	}
 	if err := (Target{Kind: KindScheme, Value: "HTTPS://example.test/path"}).Validate(); err != nil {
 		t.Fatalf("validate normalized scheme: %v", err)
+	}
+	if err := (Target{Kind: KindContentType, Value: "public.html"}).Validate(); err != nil {
+		t.Fatalf("validate content-type: %v", err)
+	}
+	if err := (Target{Kind: KindContentType, Value: ""}).Validate(); err == nil {
+		t.Fatal("expected empty content-type to fail validation")
 	}
 	association := (Association{Kind: "SCHEME", Value: "Example.App://callback", App: " app.desktop "}).Normalized()
 	if association.Kind != KindScheme || association.Value != "example.app" || association.App != "app.desktop" {
@@ -146,10 +156,10 @@ func TestUnsupportedProviderValidatesInputsBeforeUnsupportedError(t *testing.T) 
 
 func TestUnsupportedProviderValidatesDoctorOptionsBeforeUnsupportedError(t *testing.T) {
 	provider := unsupportedProvider{platform: "plan9", reason: "not implemented"}
-	if _, err := provider.Doctor(context.Background(), DoctorOptions{}); err == nil || !strings.Contains(err.Error(), "requires --browser") {
+	if _, err := provider.Doctor(context.Background(), DoctorOptions{}); err == nil || !strings.Contains(err.Error(), "doctor requires exactly one scope flag") {
 		t.Fatalf("expected doctor option validation error, got %v", err)
 	}
-	if _, err := provider.DoctorFix(context.Background(), DoctorFixOptions{}); err == nil || !strings.Contains(err.Error(), "requires --browser") {
+	if _, err := provider.DoctorFix(context.Background(), DoctorFixOptions{}); err == nil || !strings.Contains(err.Error(), "doctor fix requires exactly one scope flag") {
 		t.Fatalf("expected doctor fix option validation error, got %v", err)
 	}
 	if _, err := provider.Doctor(context.Background(), DoctorOptions{Browser: true}); err == nil || !strings.Contains(err.Error(), "support is unavailable") {

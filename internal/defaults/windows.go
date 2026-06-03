@@ -66,19 +66,34 @@ func (p windowsProvider) Get(ctx context.Context, target Target) (string, error)
 		return p.getSchemeDefault(ctx, target.Value)
 	case KindMIME:
 		return p.getMimeDefault(ctx, target.Value)
+	case KindContentType:
+		return p.getContentTypeDefault(ctx, target.Value)
 	default:
 		return "", fmt.Errorf("unsupported target kind %q", target.Kind)
 	}
 }
 
 func (p windowsProvider) Doctor(ctx context.Context, options DoctorOptions) (DoctorReport, error) {
-	if !options.Browser {
-		return DoctorReport{}, fmt.Errorf("doctor currently requires --browser")
-	}
 	if !p.regAvailable() {
 		return DoctorReport{}, windowsUnsupportedOperation("doctor")
 	}
+	switch {
+	case options.Browser:
+		return p.windowsDoctorBrowser(ctx)
+	case options.MIME != "":
+		return p.windowsDoctorMIME(ctx, options.MIME)
+	case options.Scheme != "":
+		return p.windowsDoctorScheme(ctx, options.Scheme)
+	case options.ContentType != "":
+		return p.windowsDoctorContentType(ctx, options.ContentType)
+	case options.All:
+		return p.windowsDoctorAll(ctx)
+	default:
+		return DoctorReport{}, fmt.Errorf("doctor requires a scope flag")
+	}
+}
 
+func (p windowsProvider) windowsDoctorBrowser(ctx context.Context) (DoctorReport, error) {
 	httpCandidates := p.getSchemeAssociations(ctx, "http")
 	httpsCandidates := p.getSchemeAssociations(ctx, "https")
 	mailtoCandidates := p.getSchemeAssociations(ctx, "mailto")
@@ -386,10 +401,524 @@ func (p windowsProvider) Doctor(ctx context.Context, options DoctorOptions) (Doc
 	return report, nil
 }
 
-func (p windowsProvider) DoctorFix(ctx context.Context, options DoctorFixOptions) (DoctorFixResult, error) {
-	if !options.Browser {
-		return DoctorFixResult{}, fmt.Errorf("Windows doctor fix currently requires --browser")
+func (p windowsProvider) windowsDoctorMIME(ctx context.Context, mimeType string) (DoctorReport, error) {
+	mimeType = strings.TrimSpace(strings.ToLower(mimeType))
+	report := DoctorReport{
+		Platform: "windows",
+		Scope:    "mime:" + mimeType,
+		Healthy:  true,
+		Notes: []string{
+			"dfx on Windows does not write UserChoice values directly and uses policy-backed channels instead",
+			"non-dry-run set and policy remediation use default-association XML and machine policy updates when available",
+		},
 	}
+
+	addFinding := func(id, severity, summary, details string, remediation ...string) {
+		if !strings.EqualFold(severity, "info") && !strings.EqualFold(severity, "warning") {
+			report.Healthy = false
+		}
+		remediationText := "use Windows Settings > Apps > Default apps, then re-run dfx doctor"
+		if len(remediation) > 0 && strings.TrimSpace(remediation[0]) != "" {
+			remediationText = strings.TrimSpace(remediation[0])
+		}
+		report.Findings = append(report.Findings, DoctorFinding{
+			ID:          id,
+			Severity:    severity,
+			Summary:     summary,
+			Details:     details,
+			Remediation: remediationText,
+		})
+	}
+
+	associations := p.getMimeAssociations(ctx, mimeType)
+	if err := firstError(associations); err != nil {
+		addFinding("W31", "error", fmt.Sprintf("MIME %q mapping read failed", mimeType), err.Error())
+	}
+
+	value := bestValue(associations)
+	if value == "" {
+		addFinding("W31", "warning", fmt.Sprintf("MIME %q has no default handler", mimeType), "no ProgID mapped")
+	}
+
+	if duplicates := associationCandidateSummary(associations); len(duplicates) > 1 {
+		addFinding("W12", "warning", fmt.Sprintf("store and desktop handler candidates are both present for %s", mimeType), fmt.Sprintf("%s has multiple registration candidates: %s", mimeType, strings.Join(duplicates, "; ")), "inspect HKCU/HKLM UserChoice and app registration paths and remove stale duplicate handler entries")
+	}
+
+	if isDiverged(associations) {
+		addFinding("W05", "warning", "per-user vs machine MIME defaults differ", fmt.Sprintf("%s exists in both HKCU and HKLM with different values", mimeType))
+	}
+
+	policyDetails := p.currentAssociationPolicySignals(ctx)
+	policyRecords, policyRecordIssues := p.windowsPolicyAssociationRecordSet(ctx)
+	missing, problems, mandatory := p.policyAssociationSignalsFromRecords(policyRecords, policyRecordIssues)
+	requiredPolicyTargets := strings.Join(windowsRequiredPolicyTargets(), ", ")
+	policyManaged := len(policyDetails) > 0
+	if policyManaged {
+		for _, detail := range policyDetails {
+			addFinding("W06", "info", "association defaults appear policy-driven", detail)
+		}
+		if len(problems) > 0 {
+			for _, problem := range problems {
+				addFinding("W07", "warning", "policy association source is invalid or unreadable", problem, "validate policy association XML using enterprise tooling and re-apply policy")
+			}
+			if len(missing) > 0 {
+				addFinding("W08", "warning", "policy association payload misses required defaults", strings.Join(missing, ", "), "include policy entries for "+requiredPolicyTargets)
+			}
+		} else if len(missing) != 0 {
+			addFinding("W08", "warning", "policy association payload misses required defaults", strings.Join(missing, ", "), "include policy entries for "+requiredPolicyTargets)
+		}
+		if mandatory {
+			addFinding("W26", "warning", "mandatory default-association policy blocks remediation", "policy associations are marked mandatory and may reassert on sign-in")
+		}
+		if !hasUsableAssociationFromSource(associations, "HKCU") && hasUsableAssociationFromSource(associations, "HKLM") {
+			addFinding("W09", "warning", "policy defaults may only be present in machine scope", fmt.Sprintf("%s mapping has no HKCU UserChoice but has HKLM values", mimeType))
+		}
+		currentPolicyTargets := map[string]string{mimeType: value}
+		if overrideSignals := windowsPolicyAssociationOverrideSignals(policyRecords, currentPolicyTargets); len(overrideSignals) > 0 {
+			for _, signal := range overrideSignals {
+				addFinding("W06", "warning", "policy-declared default differs from current default", signal, "verify policy scope, user override state, and delayed policy application before treating the default as enforced")
+			}
+		}
+		if isDiverged(associations) {
+			addFinding("W27", "warning", "managed policy may re-apply over user choices", fmt.Sprintf("policy scope and user scope values differ for %s", mimeType))
+		}
+		if driftSignals := p.windowsPolicyAssociationProgIDSignals(ctx, policyRecords, currentPolicyTargets); len(driftSignals) > 0 {
+			for _, signal := range driftSignals {
+				addFinding("W10", "warning", "policy ProgID appears stale after update", signal, "refresh enterprise policy XML/CSP to match current registration identifiers")
+			}
+		}
+	}
+
+	if value != "" {
+		audit, _ := auditWindowsProgID(ctx, p, value, "")
+		if !audit.HasRegistration {
+			addFinding("W11", "warning", "mapped handler points to an orphaned registry registration", fmt.Sprintf("%s for %s has no discoverable handler registration", value, mimeType))
+		} else {
+			if audit.Command == "" {
+				addFinding("W19", "warning", "mapped handler is missing an executable command", fmt.Sprintf("%s: no command", value))
+			} else {
+				if !supportsURIPayload(audit.Command) {
+					addFinding("W20", "warning", "selected handler command may not accept URI arguments", fmt.Sprintf("%s: command=%q", value, audit.Command))
+				}
+				if runtime.GOARCH != "386" && hasLikely32BitExecutableMarker(audit.Command) {
+					addFinding("W15", "warning", "selected handler appears to target a 32-bit install", fmt.Sprintf("%s: command=%q", value, audit.Command))
+				}
+			}
+			if audit.DefaultIcon == "" {
+				addFinding("W24", "warning", "selected handler has no discoverable icon registration", fmt.Sprintf("%s: no icon", value))
+			}
+			if !audit.HasCapabilities {
+				addFinding("W22", "warning", "handler has no discoverable capability registration", fmt.Sprintf("%s: no capabilities", value))
+			}
+			if verb, err := p.readAssocDefaultVerb(ctx, value); err != nil {
+				addFinding("W24", "warning", "selected handler missing shell verb defaults", fmt.Sprintf("%s: %v", value, err))
+			} else if !strings.EqualFold(verb, "open") {
+				addFinding("W24", "warning", "selected handler default verb is not open", fmt.Sprintf("%s: %s", value, verb))
+			}
+		}
+		target := Target{Kind: KindMIME, Value: mimeType}
+		if declared, err := p.assocDeclaresTargetCapability(ctx, value, target); err != nil {
+			addFinding("W22", "warning", "failed to inspect handler capability mapping", fmt.Sprintf("%s (%s): %v", value, target.String(), err))
+		} else if !declared {
+			addFinding("W02", "warning", "selected handler has no capability mapping for this target", fmt.Sprintf("%s does not declare %s handling for %s", value, target.Kind, target.Value))
+		}
+	}
+
+	return report, nil
+}
+
+func (p windowsProvider) windowsDoctorScheme(ctx context.Context, scheme string) (DoctorReport, error) {
+	scheme = strings.TrimSpace(strings.ToLower(scheme))
+	report := DoctorReport{
+		Platform: "windows",
+		Scope:    "scheme:" + scheme,
+		Healthy:  true,
+		Notes: []string{
+			"dfx on Windows does not write UserChoice values directly and uses policy-backed channels instead",
+			"non-dry-run set and policy remediation use default-association XML and machine policy updates when available",
+		},
+	}
+
+	addFinding := func(id, severity, summary, details string, remediation ...string) {
+		if !strings.EqualFold(severity, "info") && !strings.EqualFold(severity, "warning") {
+			report.Healthy = false
+		}
+		remediationText := "use Windows Settings > Apps > Default apps, then re-run dfx doctor"
+		if len(remediation) > 0 && strings.TrimSpace(remediation[0]) != "" {
+			remediationText = strings.TrimSpace(remediation[0])
+		}
+		report.Findings = append(report.Findings, DoctorFinding{
+			ID:          id,
+			Severity:    severity,
+			Summary:     summary,
+			Details:     details,
+			Remediation: remediationText,
+		})
+	}
+
+	associations := p.getSchemeAssociations(ctx, scheme)
+	if err := firstError(associations); err != nil {
+		addFinding("W33", "error", fmt.Sprintf("scheme %q default read failed", scheme), err.Error())
+	}
+
+	value := bestValue(associations)
+	if value == "" {
+		addFinding("W33", "warning", fmt.Sprintf("scheme %q has no default handler", scheme), "no ProgID mapped")
+	}
+
+	if duplicates := associationCandidateSummary(associations); len(duplicates) > 1 {
+		addFinding("W12", "warning", fmt.Sprintf("store and desktop handler candidates are both present for %s", scheme), fmt.Sprintf("%s has multiple registration candidates: %s", scheme, strings.Join(duplicates, "; ")), "inspect HKCU/HKLM UserChoice and app registration paths and remove stale duplicate handler entries")
+	}
+
+	if isDiverged(associations) {
+		addFinding("W05", "warning", "per-user vs machine scheme defaults differ", fmt.Sprintf("%s exists in both HKCU and HKLM with different values", scheme))
+	}
+
+	policyDetails := p.currentAssociationPolicySignals(ctx)
+	policyRecords, policyRecordIssues := p.windowsPolicyAssociationRecordSet(ctx)
+	missing, problems, mandatory := p.policyAssociationSignalsFromRecords(policyRecords, policyRecordIssues)
+	requiredPolicyTargets := strings.Join(windowsRequiredPolicyTargets(), ", ")
+	policyManaged := len(policyDetails) > 0
+	if policyManaged {
+		for _, detail := range policyDetails {
+			addFinding("W06", "info", "association defaults appear policy-driven", detail)
+		}
+		if len(problems) > 0 {
+			for _, problem := range problems {
+				addFinding("W07", "warning", "policy association source is invalid or unreadable", problem, "validate policy association XML using enterprise tooling and re-apply policy")
+			}
+			if len(missing) > 0 {
+				addFinding("W08", "warning", "policy association payload misses required defaults", strings.Join(missing, ", "), "include policy entries for "+requiredPolicyTargets)
+			}
+		} else if len(missing) != 0 {
+			addFinding("W08", "warning", "policy association payload misses required defaults", strings.Join(missing, ", "), "include policy entries for "+requiredPolicyTargets)
+		}
+		if mandatory {
+			addFinding("W26", "warning", "mandatory default-association policy blocks remediation", "policy associations are marked mandatory and may reassert on sign-in")
+		}
+		if !hasUsableAssociationFromSource(associations, "HKCU") && hasUsableAssociationFromSource(associations, "HKLM") {
+			addFinding("W09", "warning", "policy defaults may only be present in machine scope", fmt.Sprintf("%s scheme has no HKCU UserChoice but has HKLM values", scheme))
+		}
+		currentPolicyTargets := map[string]string{scheme: value}
+		if overrideSignals := windowsPolicyAssociationOverrideSignals(policyRecords, currentPolicyTargets); len(overrideSignals) > 0 {
+			for _, signal := range overrideSignals {
+				addFinding("W06", "warning", "policy-declared default differs from current default", signal, "verify policy scope, user override state, and delayed policy application before treating the default as enforced")
+			}
+		}
+		if isDiverged(associations) {
+			addFinding("W27", "warning", "managed policy may re-apply over user choices", fmt.Sprintf("policy scope and user scope values differ for %s", scheme))
+		}
+		if driftSignals := p.windowsPolicyAssociationProgIDSignals(ctx, policyRecords, currentPolicyTargets); len(driftSignals) > 0 {
+			for _, signal := range driftSignals {
+				addFinding("W10", "warning", "policy ProgID appears stale after update", signal, "refresh enterprise policy XML/CSP to match current registration identifiers")
+			}
+		}
+	}
+
+	if value != "" {
+		audit, _ := auditWindowsProgID(ctx, p, value, "")
+		if !audit.HasRegistration {
+			addFinding("W11", "warning", "mapped handler points to an orphaned registry registration", fmt.Sprintf("%s for scheme %s has no discoverable handler registration", value, scheme))
+		} else {
+			if audit.Command == "" {
+				addFinding("W19", "warning", "mapped handler is missing an executable command", fmt.Sprintf("%s: no command", value))
+			} else {
+				if !supportsURIPayload(audit.Command) {
+					addFinding("W20", "warning", "selected handler command may not accept URI arguments", fmt.Sprintf("%s: command=%q", value, audit.Command))
+				}
+				if runtime.GOARCH != "386" && hasLikely32BitExecutableMarker(audit.Command) {
+					addFinding("W15", "warning", "selected handler appears to target a 32-bit install", fmt.Sprintf("%s: command=%q", value, audit.Command))
+				}
+			}
+			if audit.DefaultIcon == "" {
+				addFinding("W24", "warning", "selected handler has no discoverable icon registration", fmt.Sprintf("%s: no icon", value))
+			}
+			if !audit.HasCapabilities {
+				addFinding("W22", "warning", "handler has no discoverable capability registration", fmt.Sprintf("%s: no capabilities", value))
+			}
+			if verb, err := p.readAssocDefaultVerb(ctx, value); err != nil {
+				addFinding("W24", "warning", "selected handler missing shell verb defaults", fmt.Sprintf("%s: %v", value, err))
+			} else if !strings.EqualFold(verb, "open") {
+				addFinding("W24", "warning", "selected handler default verb is not open", fmt.Sprintf("%s: %s", value, verb))
+			}
+		}
+		target := Target{Kind: KindScheme, Value: scheme}
+		if declared, err := p.assocDeclaresTargetCapability(ctx, value, target); err != nil {
+			addFinding("W22", "warning", "failed to inspect handler capability mapping", fmt.Sprintf("%s (%s): %v", value, target.String(), err))
+		} else if !declared {
+			addFinding("W02", "warning", "selected handler has no capability mapping for this target", fmt.Sprintf("%s does not declare %s handling for %s", value, target.Kind, target.Value))
+		}
+	}
+
+	if callbackScheme := normalizeCallbackScheme(os.Getenv("DFX_CALLBACK_SCHEME")); callbackScheme != "" && strings.EqualFold(scheme, callbackScheme) {
+		httpValue, _ := p.getSchemeDefault(ctx, "http")
+		httpsValue, _ := p.getSchemeDefault(ctx, "https")
+		browserDefaults := map[string]struct{}{
+			strings.ToLower(httpValue):  {},
+			strings.ToLower(httpsValue): {},
+		}
+		if _, ok := browserDefaults[strings.ToLower(value)]; ok && value != "" {
+			addFinding("W30", "warning", "callback scheme points to the browser default", fmt.Sprintf("%s=%q", scheme, value), "point the callback scheme to a native app handler to avoid browser loop behavior")
+		}
+	}
+
+	return report, nil
+}
+
+func (p windowsProvider) windowsDoctorContentType(ctx context.Context, value string) (DoctorReport, error) {
+	value = strings.TrimSpace(strings.ToLower(value))
+	report := DoctorReport{
+		Platform: "windows",
+		Scope:    "content-type:" + value,
+		Healthy:  true,
+		Notes: []string{
+			"dfx on Windows does not write UserChoice values directly and uses policy-backed channels instead",
+			"non-dry-run set and policy remediation use default-association XML and machine policy updates when available",
+		},
+	}
+
+	addFinding := func(id, severity, summary, details string, remediation ...string) {
+		if !strings.EqualFold(severity, "info") && !strings.EqualFold(severity, "warning") {
+			report.Healthy = false
+		}
+		remediationText := "use Windows Settings > Apps > Default apps, then re-run dfx doctor"
+		if len(remediation) > 0 && strings.TrimSpace(remediation[0]) != "" {
+			remediationText = strings.TrimSpace(remediation[0])
+		}
+		report.Findings = append(report.Findings, DoctorFinding{
+			ID:          id,
+			Severity:    severity,
+			Summary:     summary,
+			Details:     details,
+			Remediation: remediationText,
+		})
+	}
+
+	var associations []associationEntry
+	var progID string
+	if strings.HasPrefix(value, ".") {
+		associations = p.getExtensionAssociations(ctx, value)
+		if err := firstError(associations); err != nil {
+			addFinding("W32", "error", fmt.Sprintf("extension %q default read failed", value), err.Error())
+		}
+		progID = bestValue(associations)
+	} else {
+		if p.hasAssocRegistration(ctx, value) {
+			progID = value
+		} else {
+			addFinding("W32", "error", fmt.Sprintf("content type %q is not registered", value), "no ProgID registration found")
+		}
+	}
+
+	if progID == "" {
+		addFinding("W32", "warning", fmt.Sprintf("content type %q has no default handler", value), "no ProgID mapped")
+	} else {
+		if isDiverged(associations) {
+			addFinding("W05", "warning", "per-user vs machine content-type defaults differ", fmt.Sprintf("%s exists in both HKCU and HKLM with different values", value))
+		}
+		if duplicates := associationCandidateSummary(associations); len(duplicates) > 1 {
+			addFinding("W12", "warning", fmt.Sprintf("store and desktop handler candidates are both present for %s", value), fmt.Sprintf("%s has multiple registration candidates: %s", value, strings.Join(duplicates, "; ")), "inspect HKCU/HKLM UserChoice and app registration paths and remove stale duplicate handler entries")
+		}
+	}
+
+	policyDetails := p.currentAssociationPolicySignals(ctx)
+	policyRecords, policyRecordIssues := p.windowsPolicyAssociationRecordSet(ctx)
+	missing, problems, mandatory := p.policyAssociationSignalsFromRecords(policyRecords, policyRecordIssues)
+	requiredPolicyTargets := strings.Join(windowsRequiredPolicyTargets(), ", ")
+	policyManaged := len(policyDetails) > 0
+	if policyManaged {
+		for _, detail := range policyDetails {
+			addFinding("W06", "info", "association defaults appear policy-driven", detail)
+		}
+		if len(problems) > 0 {
+			for _, problem := range problems {
+				addFinding("W07", "warning", "policy association source is invalid or unreadable", problem, "validate policy association XML using enterprise tooling and re-apply policy")
+			}
+			if len(missing) > 0 {
+				addFinding("W08", "warning", "policy association payload misses required defaults", strings.Join(missing, ", "), "include policy entries for "+requiredPolicyTargets)
+			}
+		} else if len(missing) != 0 {
+			addFinding("W08", "warning", "policy association payload misses required defaults", strings.Join(missing, ", "), "include policy entries for "+requiredPolicyTargets)
+		}
+		if mandatory {
+			addFinding("W26", "warning", "mandatory default-association policy blocks remediation", "policy associations are marked mandatory and may reassert on sign-in")
+		}
+		if len(associations) > 0 && !hasUsableAssociationFromSource(associations, "HKCU") && hasUsableAssociationFromSource(associations, "HKLM") {
+			addFinding("W09", "warning", "policy defaults may only be present in machine scope", fmt.Sprintf("%s has no HKCU UserChoice but has HKLM values", value))
+		}
+		currentPolicyTargets := map[string]string{value: progID}
+		if overrideSignals := windowsPolicyAssociationOverrideSignals(policyRecords, currentPolicyTargets); len(overrideSignals) > 0 {
+			for _, signal := range overrideSignals {
+				addFinding("W06", "warning", "policy-declared default differs from current default", signal, "verify policy scope, user override state, and delayed policy application before treating the default as enforced")
+			}
+		}
+		if len(associations) > 0 && isDiverged(associations) {
+			addFinding("W27", "warning", "managed policy may re-apply over user choices", fmt.Sprintf("policy scope and user scope values differ for %s", value))
+		}
+		if driftSignals := p.windowsPolicyAssociationProgIDSignals(ctx, policyRecords, currentPolicyTargets); len(driftSignals) > 0 {
+			for _, signal := range driftSignals {
+				addFinding("W10", "warning", "policy ProgID appears stale after update", signal, "refresh enterprise policy XML/CSP to match current registration identifiers")
+			}
+		}
+	}
+
+	if progID != "" {
+		audit, _ := auditWindowsProgID(ctx, p, progID, "")
+		if !audit.HasRegistration {
+			addFinding("W11", "warning", "mapped handler points to an orphaned registry registration", fmt.Sprintf("%s for %s has no discoverable handler registration", progID, value))
+		} else {
+			if audit.Command == "" {
+				addFinding("W19", "warning", "mapped handler is missing an executable command", fmt.Sprintf("%s: no command", progID))
+			} else {
+				if !supportsURIPayload(audit.Command) {
+					addFinding("W20", "warning", "selected handler command may not accept URI arguments", fmt.Sprintf("%s: command=%q", progID, audit.Command))
+				}
+				if runtime.GOARCH != "386" && hasLikely32BitExecutableMarker(audit.Command) {
+					addFinding("W15", "warning", "selected handler appears to target a 32-bit install", fmt.Sprintf("%s: command=%q", progID, audit.Command))
+				}
+			}
+			if audit.DefaultIcon == "" {
+				addFinding("W24", "warning", "selected handler has no discoverable icon registration", fmt.Sprintf("%s: no icon", progID))
+			}
+			if !audit.HasCapabilities {
+				addFinding("W22", "warning", "handler has no discoverable capability registration", fmt.Sprintf("%s: no capabilities", progID))
+			}
+			if verb, err := p.readAssocDefaultVerb(ctx, progID); err != nil {
+				addFinding("W24", "warning", "selected handler missing shell verb defaults", fmt.Sprintf("%s: %v", progID, err))
+			} else if !strings.EqualFold(verb, "open") {
+				addFinding("W24", "warning", "selected handler default verb is not open", fmt.Sprintf("%s: %s", progID, verb))
+			}
+		}
+	}
+
+	return report, nil
+}
+
+func (p windowsProvider) windowsDoctorAll(ctx context.Context) (DoctorReport, error) {
+	browserReport, err := p.windowsDoctorBrowser(ctx)
+	if err != nil {
+		return DoctorReport{}, err
+	}
+
+	report := DoctorReport{
+		Platform: "windows",
+		Scope:    "all",
+		Healthy:  browserReport.Healthy,
+		Notes:    append([]string(nil), browserReport.Notes...),
+		Findings: append([]DoctorFinding(nil), browserReport.Findings...),
+	}
+
+	schemes := p.enumerateSchemeAssociations(ctx)
+	extensions := p.enumerateExtensionAssociations(ctx)
+
+	var items []struct {
+		kind  string
+		value string
+	}
+	seen := map[string]struct{}{}
+	for _, s := range schemes {
+		if s == "http" || s == "https" || s == "mailto" {
+			continue
+		}
+		key := "scheme:" + strings.ToLower(s)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		items = append(items, struct{ kind, value string }{"scheme", s})
+	}
+	for _, e := range extensions {
+		ext := strings.ToLower(e)
+		if ext == ".html" || ext == ".htm" || ext == ".xhtml" || ext == ".xht" {
+			continue
+		}
+		key := "ext:" + ext
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		items = append(items, struct{ kind, value string }{"extension", e})
+	}
+
+	total := len(items)
+	if total > 50 {
+		items = items[:50]
+		report.Notes = append(report.Notes, fmt.Sprintf("association enumeration capped at 50 (%d additional associations found)", total))
+	}
+
+	addFinding := func(id, severity, summary, details string, remediation ...string) {
+		if !strings.EqualFold(severity, "info") && !strings.EqualFold(severity, "warning") {
+			report.Healthy = false
+		}
+		remediationText := "use Windows Settings > Apps > Default apps, then re-run dfx doctor"
+		if len(remediation) > 0 && strings.TrimSpace(remediation[0]) != "" {
+			remediationText = strings.TrimSpace(remediation[0])
+		}
+		report.Findings = append(report.Findings, DoctorFinding{
+			ID:          id,
+			Severity:    severity,
+			Summary:     summary,
+			Details:     details,
+			Remediation: remediationText,
+		})
+	}
+
+	for _, item := range items {
+		switch item.kind {
+		case "scheme":
+			assoc := p.getSchemeAssociations(ctx, item.value)
+			progID := bestValue(assoc)
+			if progID == "" {
+				addFinding("W33", "warning", fmt.Sprintf("scheme %q has no default handler", item.value), fmt.Sprintf("%s: no ProgID mapped", item.value))
+				continue
+			}
+			audit, _ := auditWindowsProgID(ctx, p, progID, "")
+			if !audit.HasRegistration {
+				addFinding("W11", "warning", "mapped handler points to an orphaned registry registration", fmt.Sprintf("%s for scheme %s has no discoverable handler registration", progID, item.value))
+			}
+			if audit.Command == "" {
+				addFinding("W19", "warning", "mapped handler is missing an executable command", fmt.Sprintf("%s: no command", progID))
+			} else if !supportsURIPayload(audit.Command) {
+				addFinding("W20", "warning", "selected handler command may not accept URI arguments", fmt.Sprintf("%s: command=%q", progID, audit.Command))
+			}
+		case "extension":
+			assoc := p.getExtensionAssociations(ctx, item.value)
+			progID := bestValue(assoc)
+			if progID == "" {
+				addFinding("W32", "warning", fmt.Sprintf("extension %q has no default handler", item.value), fmt.Sprintf("%s: no ProgID mapped", item.value))
+				continue
+			}
+			audit, _ := auditWindowsProgID(ctx, p, progID, "")
+			if !audit.HasRegistration {
+				addFinding("W11", "warning", "mapped handler points to an orphaned registry registration", fmt.Sprintf("%s for extension %s has no discoverable handler registration", progID, item.value))
+			}
+			if audit.Command == "" {
+				addFinding("W19", "warning", "mapped handler is missing an executable command", fmt.Sprintf("%s: no command", progID))
+			}
+		}
+	}
+
+	return report, nil
+}
+
+func (p windowsProvider) DoctorFix(ctx context.Context, options DoctorFixOptions) (DoctorFixResult, error) {
+	switch {
+	case options.Browser:
+		return p.windowsDoctorFixBrowser(ctx, options)
+	case options.MIME != "":
+		return p.windowsDoctorFixMIME(ctx, options)
+	case options.Scheme != "":
+		return p.windowsDoctorFixScheme(ctx, options)
+	case options.ContentType != "":
+		return p.windowsDoctorFixContentType(ctx, options)
+	case options.All:
+		return p.windowsDoctorFixAll(ctx, options)
+	default:
+		return DoctorFixResult{}, fmt.Errorf("doctor fix requires a scope flag")
+	}
+}
+
+func (p windowsProvider) windowsDoctorFixBrowser(ctx context.Context, options DoctorFixOptions) (DoctorFixResult, error) {
 	operations := []string{
 		"Open Windows Settings > Apps > Default apps",
 		"Set the intended browser for HTTP and HTTPS protocols",
@@ -408,6 +937,117 @@ func (p windowsProvider) DoctorFix(ctx context.Context, options DoctorFixOptions
 	setResult, err := p.Set(ctx, Association{Kind: KindBrowser, Value: "default", App: app}, SetOptions{})
 	operations = append(operations, setResult.Operations...)
 	return DoctorFixResult{Changed: setResult.Changed, Operations: operations}, err
+}
+
+func (p windowsProvider) windowsDoctorFixMIME(ctx context.Context, options DoctorFixOptions) (DoctorFixResult, error) {
+	mimeType := strings.TrimSpace(strings.ToLower(options.MIME))
+	operations := []string{fmt.Sprintf("Read current default for MIME %s", mimeType)}
+	app, err := p.getMimeDefault(ctx, mimeType)
+	if err != nil {
+		return DoctorFixResult{Operations: operations}, fmt.Errorf("Windows doctor fix could not determine the current MIME default to reapply through policy: %w", err)
+	}
+	operations = append(operations, fmt.Sprintf("Use current MIME default as policy fix target: %s", app))
+	setResult, err := p.Set(ctx, Association{Kind: KindMIME, Value: mimeType, App: app}, SetOptions{DryRun: options.DryRun})
+	operations = append(operations, setResult.Operations...)
+	return DoctorFixResult{Changed: setResult.Changed, Operations: operations}, err
+}
+
+func (p windowsProvider) windowsDoctorFixScheme(ctx context.Context, options DoctorFixOptions) (DoctorFixResult, error) {
+	scheme := strings.TrimSpace(strings.ToLower(options.Scheme))
+	operations := []string{fmt.Sprintf("Read current default for scheme %s", scheme)}
+	app, err := p.getSchemeDefault(ctx, scheme)
+	if err != nil {
+		return DoctorFixResult{Operations: operations}, fmt.Errorf("Windows doctor fix could not determine the current scheme default to reapply through policy: %w", err)
+	}
+	operations = append(operations, fmt.Sprintf("Use current scheme default as policy fix target: %s", app))
+	setResult, err := p.Set(ctx, Association{Kind: KindScheme, Value: scheme, App: app}, SetOptions{DryRun: options.DryRun})
+	operations = append(operations, setResult.Operations...)
+	return DoctorFixResult{Changed: setResult.Changed, Operations: operations}, err
+}
+
+func (p windowsProvider) windowsDoctorFixContentType(ctx context.Context, options DoctorFixOptions) (DoctorFixResult, error) {
+	value := strings.TrimSpace(options.ContentType)
+	operations := []string{fmt.Sprintf("Read current default for content-type %s", value)}
+	app, err := p.getContentTypeDefault(ctx, value)
+	if err != nil {
+		return DoctorFixResult{Operations: operations}, fmt.Errorf("Windows doctor fix could not determine the current content-type default to reapply through policy: %w", err)
+	}
+	operations = append(operations, fmt.Sprintf("Use current content-type default as policy fix target: %s", app))
+	setResult, err := p.Set(ctx, Association{Kind: KindContentType, Value: value, App: app}, SetOptions{DryRun: options.DryRun})
+	operations = append(operations, setResult.Operations...)
+	return DoctorFixResult{Changed: setResult.Changed, Operations: operations}, err
+}
+
+func (p windowsProvider) windowsDoctorFixAll(ctx context.Context, options DoctorFixOptions) (DoctorFixResult, error) {
+	operations := []string{"Build full default-association policy from current defaults"}
+	records := map[string]string{}
+
+	browserTargets := windowsTargetsForAssociation(Target{Kind: KindBrowser, Value: "default"})
+	for _, target := range browserTargets {
+		progID, err := p.Get(ctx, target)
+		if err != nil || progID == "" {
+			continue
+		}
+		ids, _ := windowsPolicyIdentifiersForAssociation(Association{Kind: target.Kind, Value: target.Value, App: progID})
+		for _, id := range ids {
+			records[strings.ToLower(id)] = progID
+		}
+	}
+
+	schemes := p.enumerateSchemeAssociations(ctx)
+	for _, scheme := range schemes {
+		progID, err := p.getSchemeDefault(ctx, scheme)
+		if err != nil || progID == "" {
+			continue
+		}
+		records[strings.ToLower(scheme)] = progID
+	}
+
+	extensions := p.enumerateExtensionAssociations(ctx)
+	for _, ext := range extensions {
+		progID, err := p.getContentTypeDefault(ctx, ext)
+		if err != nil || progID == "" {
+			continue
+		}
+		records[strings.ToLower(ext)] = progID
+	}
+
+	if len(records) == 0 {
+		return DoctorFixResult{Operations: operations}, fmt.Errorf("no current defaults found to build policy")
+	}
+
+	if options.DryRun {
+		operations = append(operations, fmt.Sprintf("Would write default-association policy XML with %d entries", len(records)))
+		return DoctorFixResult{Changed: false, Operations: operations}, nil
+	}
+
+	policyPath := p.windowsDefaultAssociationsPolicyPath(ctx)
+	xmlContent := windowsDefaultAssociationsPolicyXML(records)
+	if err := os.MkdirAll(filepath.Dir(policyPath), 0o755); err != nil {
+		return DoctorFixResult{Operations: operations}, fmt.Errorf("create policy directory: %w", err)
+	}
+	if err := os.WriteFile(policyPath, []byte(xmlContent), 0o644); err != nil {
+		return DoctorFixResult{Operations: operations}, fmt.Errorf("write policy XML: %w", err)
+	}
+	operations = append(operations, fmt.Sprintf("Wrote default-association policy XML with %d entries to %s", len(records), policyPath))
+
+	if _, err := p.runnerOrDefault().Run(
+		ctx,
+		"reg",
+		"add",
+		windowsDefaultAssociationsPolicyRegistryKey,
+		"/v",
+		windowsDefaultAssociationsPolicyRegistryValue,
+		"/t",
+		"REG_SZ",
+		"/d",
+		policyPath,
+		"/f",
+	); err != nil {
+		return DoctorFixResult{Changed: true, Operations: operations}, fmt.Errorf("configure policy registry key: %w", err)
+	}
+	operations = append(operations, fmt.Sprintf("Configured %s/%s=%s", windowsDefaultAssociationsPolicyRegistryKey, windowsDefaultAssociationsPolicyRegistryValue, policyPath))
+	return DoctorFixResult{Changed: true, Operations: operations}, nil
 }
 
 func (p windowsProvider) Set(ctx context.Context, association Association, options SetOptions) (SetResult, error) {
@@ -569,6 +1209,11 @@ func windowsCapabilityAssociationQueries(target Target) []windowsCapabilityAssoc
 			queries = append(queries, windowsCapabilityAssociationQuery{subkey: "FileAssociations", names: extensions})
 		}
 		return queries
+	case KindContentType:
+		if strings.HasPrefix(target.Value, ".") {
+			return []windowsCapabilityAssociationQuery{{subkey: "FileAssociations", names: []string{target.Value}}}
+		}
+		return []windowsCapabilityAssociationQuery{{subkey: "MIMEAssociations", names: []string{target.Value}}}
 	default:
 		return nil
 	}
@@ -696,6 +1341,141 @@ func (p windowsProvider) getMimeDefault(ctx context.Context, mime string) (strin
 		return "", fmt.Errorf("no handler found for %q MIME", strings.TrimSpace(strings.ToLower(mime)))
 	}
 	return value, nil
+}
+
+func (p windowsProvider) getContentTypeDefault(ctx context.Context, value string) (string, error) {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "" {
+		return "", fmt.Errorf("empty content type is not valid")
+	}
+	if strings.HasPrefix(value, ".") {
+		result := bestValue(p.getExtensionAssociations(ctx, value))
+		if result == "" {
+			return "", fmt.Errorf("no handler found for extension %q", value)
+		}
+		return result, nil
+	}
+	if p.hasAssocRegistration(ctx, value) {
+		return value, nil
+	}
+	return "", fmt.Errorf("no handler found for content type %q", value)
+}
+
+func (p windowsProvider) getExtensionAssociations(ctx context.Context, extension string) []associationEntry {
+	extension = strings.TrimSpace(strings.ToLower(extension))
+	if !strings.HasPrefix(extension, ".") {
+		extension = "." + extension
+	}
+	keys := []regKeySource{
+		{
+			source: "HKCU",
+			path:   `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\` + extension + `\UserChoice`,
+		},
+		{
+			source: "HKLM",
+			path:   `HKLM\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\` + extension + `\UserChoice`,
+		},
+	}
+	return p.readAssociations(ctx, keys)
+}
+
+func (p windowsProvider) enumerateSchemeAssociations(ctx context.Context) []string {
+	keys := []string{
+		`HKCU\Software\Microsoft\Windows\Shell\Associations\UrlAssociations`,
+		`HKLM\Software\Microsoft\Windows\Shell\Associations\UrlAssociations`,
+	}
+	return p.enumerateRegSubkeys(ctx, keys)
+}
+
+func (p windowsProvider) enumerateExtensionAssociations(ctx context.Context) []string {
+	keys := []string{
+		`HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts`,
+		`HKLM\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts`,
+	}
+	return p.enumerateRegSubkeys(ctx, keys)
+}
+
+func (p windowsProvider) enumerateRegSubkeys(ctx context.Context, keys []string) []string {
+	seen := map[string]struct{}{}
+	var result []string
+	for _, key := range keys {
+		subkeys, err := p.readRegSubkeys(ctx, key)
+		if err != nil {
+			continue
+		}
+		for _, subkey := range subkeys {
+			sk := strings.ToLower(strings.TrimSpace(subkey))
+			if sk == "" {
+				continue
+			}
+			if _, ok := seen[sk]; ok {
+				continue
+			}
+			seen[sk] = struct{}{}
+			result = append(result, subkey)
+		}
+	}
+	sort.Strings(result)
+	return result
+}
+
+func (p windowsProvider) readRegSubkeys(ctx context.Context, key string) ([]string, error) {
+	output, err := p.runnerOrDefault().Run(ctx, "reg", "query", key)
+	if err != nil {
+		return nil, err
+	}
+	prefix := windowsExpandRegKey(key)
+	var subkeys []string
+	seen := map[string]struct{}{}
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		upper := strings.ToUpper(line)
+		if !strings.HasPrefix(upper, "HKEY_CURRENT_USER\\") && !strings.HasPrefix(upper, "HKEY_LOCAL_MACHINE\\") {
+			continue
+		}
+		if strings.EqualFold(line, prefix) {
+			continue
+		}
+		if !strings.HasPrefix(upper, strings.ToUpper(prefix+`\\`)) {
+			continue
+		}
+		relative := line[len(prefix)+1:]
+		if idx := strings.Index(relative, `\\`); idx >= 0 {
+			relative = relative[:idx]
+		}
+		relative = strings.TrimSpace(relative)
+		if relative == "" {
+			continue
+		}
+		if _, ok := seen[relative]; ok {
+			continue
+		}
+		seen[relative] = struct{}{}
+		subkeys = append(subkeys, relative)
+	}
+	if len(subkeys) == 0 {
+		return nil, fmt.Errorf("no subkeys found in %s", key)
+	}
+	return subkeys, nil
+}
+
+func windowsExpandRegKey(key string) string {
+	key = strings.ToUpper(key)
+	switch {
+	case strings.HasPrefix(key, `HKCU\`):
+		return `HKEY_CURRENT_USER\` + key[5:]
+	case strings.HasPrefix(key, `HKLM\`):
+		return `HKEY_LOCAL_MACHINE\` + key[5:]
+	case strings.HasPrefix(key, `HKEY_CURRENT_USER\`):
+		return key
+	case strings.HasPrefix(key, `HKEY_LOCAL_MACHINE\`):
+		return key
+	default:
+		return key
+	}
 }
 
 func (p windowsProvider) getSchemeAssociations(ctx context.Context, scheme string) []associationEntry {
@@ -957,6 +1737,12 @@ func (p windowsProvider) assocDeclaresTargetCapability(ctx context.Context, asso
 		if extensions := mimeToExtensions(valueToMatch); len(extensions) > 0 {
 			checks = append(checks, capabilityCheck{subkey: "FileAssociations", values: valuesFor(extensions...)})
 		}
+	case KindContentType:
+		if strings.HasPrefix(valueToMatch, ".") {
+			checks = append(checks, capabilityCheck{subkey: "FileAssociations", values: valuesFor(valueToMatch)})
+		} else {
+			checks = append(checks, capabilityCheck{subkey: "MIMEAssociations", values: valuesFor(valueToMatch)})
+		}
 	default:
 		return false, fmt.Errorf("unsupported target kind %q", target.Kind)
 	}
@@ -1210,10 +1996,6 @@ func (p windowsProvider) windowsPolicyAssociationRecordSet(ctx context.Context) 
 	})
 	sort.Strings(problemMessages)
 	return dedup, problemMessages
-}
-
-func normalizeWindowsPolicyAssociationXMLText(raw string) string {
-	return strings.TrimPrefix(strings.TrimSpace(raw), "\ufeff")
 }
 
 func expandWindowsEnvPath(raw string) string {
@@ -2278,6 +3060,8 @@ func windowsPolicyIdentifiersForAssociation(association Association) ([]string, 
 				return nil, fmt.Errorf("Windows policy writes require file-extension mappings for MIME target %q", target.Value)
 			}
 			identifiers = append(identifiers, extensions...)
+		case KindContentType:
+			identifiers = append(identifiers, target.Value)
 		default:
 			return nil, fmt.Errorf("unsupported Windows policy target kind %q", target.Kind)
 		}
@@ -2348,6 +3132,9 @@ func windowsSetGuidanceOperations(association Association) []string {
 				continue
 			}
 			operations = append(operations, fmt.Sprintf("Plan Default apps MIME-equivalent assignment: %s -> %s", target.Value, association.App))
+		case KindContentType:
+			operations = append(operations, fmt.Sprintf("Plan Default apps content-type assignment: %s -> %s", target.Value, association.App))
+			xmlRecords = append(xmlRecords, fmt.Sprintf(`<Association Identifier="%s" ProgId="%s" ApplicationName="%s" />`, windowsXMLAttributeEscape(target.Value), app, app))
 		}
 	}
 	if len(xmlRecords) > 0 {
@@ -2375,6 +3162,9 @@ func windowsXMLAttributeEscape(value string) string {
 }
 
 func windowsTargetsForAssociation(target Target) []Target {
+	if target.Kind == KindContentType {
+		return []Target{target}
+	}
 	if target.Kind != KindBrowser && !(target.Kind == KindScheme && (target.Value == "http" || target.Value == "https")) {
 		return []Target{target}
 	}

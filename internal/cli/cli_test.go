@@ -30,7 +30,7 @@ func (f *fakeProvider) Inspect(context.Context) defaults.InspectReport {
 			SupportsBrowser:       true,
 			SupportsScheme:        true,
 			SupportsMIME:          true,
-			SupportsContentType:   false,
+			SupportsContentType:   true,
 		},
 	}
 }
@@ -39,10 +39,20 @@ func (f *fakeProvider) Get(_ context.Context, target defaults.Target) (string, e
 	return target.Value + ".app", nil
 }
 
-func (f *fakeProvider) Doctor(context.Context, defaults.DoctorOptions) (defaults.DoctorReport, error) {
+func (f *fakeProvider) Doctor(_ context.Context, options defaults.DoctorOptions) (defaults.DoctorReport, error) {
+	scope := "browser"
+	if options.MIME != "" {
+		scope = "mime:" + options.MIME
+	} else if options.Scheme != "" {
+		scope = "scheme:" + options.Scheme
+	} else if options.ContentType != "" {
+		scope = "content_type:" + options.ContentType
+	} else if options.All {
+		scope = "all"
+	}
 	return defaults.DoctorReport{
 		Platform: "test",
-		Scope:    "browser",
+		Scope:    scope,
 		Healthy:  true,
 		Findings: []defaults.DoctorFinding{
 			{ID: "L01", Severity: "warning", Summary: "example finding"},
@@ -58,6 +68,9 @@ func (f *fakeProvider) DoctorFix(_ context.Context, options defaults.DoctorFixOp
 }
 
 func (f *fakeProvider) Set(_ context.Context, association defaults.Association, options defaults.SetOptions) (defaults.SetResult, error) {
+	if options.System {
+		return defaults.SetResult{}, errors.New("system-level writes require root privileges")
+	}
 	f.set = append(f.set, association)
 	return defaults.SetResult{Changed: !options.DryRun, Operations: []string{"set " + association.Target().String()}}, nil
 }
@@ -168,19 +181,25 @@ func assertJSONError(t *testing.T, stdout *bytes.Buffer, wantError string, wantE
 }
 
 func TestTargetFromFlagsRequiresExactlyOneTarget(t *testing.T) {
-	if _, err := targetFromFlags("", "", false); err == nil {
+	if _, err := targetFromFlags("", "", "", false); err == nil {
 		t.Fatal("expected missing target error")
 	}
-	if _, err := targetFromFlags("text/html", "https", false); err == nil {
+	if _, err := targetFromFlags("text/html", "https", "", false); err == nil {
 		t.Fatal("expected mutually exclusive target error")
 	}
-	if _, err := targetFromFlags("", "https", true); err == nil {
+	if _, err := targetFromFlags("", "https", "", true); err == nil {
 		t.Fatal("expected mutually exclusive browser target error")
+	}
+	if _, err := targetFromFlags("text/html", "", "text/html", false); err == nil {
+		t.Fatal("expected mutually exclusive mime/content-type target error")
+	}
+	if _, err := targetFromFlags("", "https", "text/html", false); err == nil {
+		t.Fatal("expected mutually exclusive scheme/content-type target error")
 	}
 }
 
 func TestTargetFromFlagsSupportsBrowser(t *testing.T) {
-	target, err := targetFromFlags("", "", true)
+	target, err := targetFromFlags("", "", "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +209,7 @@ func TestTargetFromFlagsSupportsBrowser(t *testing.T) {
 }
 
 func TestTargetFromFlagsNormalizesSchemeURI(t *testing.T) {
-	target, err := targetFromFlags("", "HTTPS://example.test/callback", false)
+	target, err := targetFromFlags("", "HTTPS://example.test/callback", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +217,7 @@ func TestTargetFromFlagsNormalizesSchemeURI(t *testing.T) {
 		t.Fatalf("target=%+v", target)
 	}
 
-	target, err = targetFromFlags("", "x-scheme-handler/Example.App", false)
+	target, err = targetFromFlags("", "x-scheme-handler/Example.App", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,30 +225,68 @@ func TestTargetFromFlagsNormalizesSchemeURI(t *testing.T) {
 		t.Fatalf("target=%+v", target)
 	}
 
-	if _, err := targetFromFlags("", "://missing", false); err == nil {
+	if _, err := targetFromFlags("", "://missing", "", false); err == nil {
 		t.Fatal("expected malformed scheme URI to fail")
 	}
-	if _, err := targetFromFlags("", "bad_scheme", false); err == nil {
+	if _, err := targetFromFlags("", "bad_scheme", "", false); err == nil {
 		t.Fatal("expected invalid scheme characters to fail")
 	}
-	if _, err := targetFromFlags("text", "", false); err == nil {
+	if _, err := targetFromFlags("text", "", "", false); err == nil {
 		t.Fatal("expected invalid MIME to fail")
+	}
+}
+
+func TestTargetFromFlagsSupportsContentType(t *testing.T) {
+	target, err := targetFromFlags("", "", "public.html", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.Kind != defaults.KindContentType || target.Value != "public.html" {
+		t.Fatalf("target=%+v", target)
+	}
+
+	target, err = targetFromFlags("", "", "text/html", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.Kind != defaults.KindContentType || target.Value != "text/html" {
+		t.Fatalf("target=%+v", target)
+	}
+
+	if _, err := targetFromFlags("", "", "", false); err == nil {
+		t.Fatal("expected missing target error")
 	}
 }
 
 func TestOpenTestTargetFromFlagsRequiresExactlyOneTarget(t *testing.T) {
 	t.Setenv("DFX_CALLBACK_SCHEME", "myapp://oauth/callback")
-	if _, err := openTestTargetFromFlags("", "", false, false); err == nil {
+	if _, err := openTestTargetFromFlags("", "", "", false, false); err == nil {
 		t.Fatal("expected missing target error")
 	}
-	if _, err := openTestTargetFromFlags("text/html", "https", false, false); err == nil {
+	if _, err := openTestTargetFromFlags("text/html", "https", "", false, false); err == nil {
 		t.Fatal("expected mutually exclusive target error")
 	}
-	if _, err := openTestTargetFromFlags("", "https", true, true); err == nil {
+	if _, err := openTestTargetFromFlags("", "https", "", true, true); err == nil {
 		t.Fatal("expected mutually exclusive callback/browser/scheme error")
 	}
-	if _, err := openTestTargetFromFlags("text/html", "", true, true); err == nil {
+	if _, err := openTestTargetFromFlags("text/html", "", "", true, true); err == nil {
 		t.Fatal("expected mutually exclusive callback/mime/browser error")
+	}
+	if _, err := openTestTargetFromFlags("", "", "text/html", true, false); err == nil {
+		t.Fatal("expected mutually exclusive content-type/browser error")
+	}
+	if _, err := openTestTargetFromFlags("text/html", "", "public.html", false, false); err == nil {
+		t.Fatal("expected mutually exclusive mime/content-type error")
+	}
+}
+
+func TestOpenTestTargetFromFlagsSupportsContentType(t *testing.T) {
+	target, err := openTestTargetFromFlags("", "", "public.html", false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.Kind != defaults.KindContentType || target.Value != "public.html" {
+		t.Fatalf("target=%+v", target)
 	}
 }
 
@@ -2104,7 +2161,7 @@ func TestGetRequiresTarget(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
-	assertJSONError(t, &stdout, "one of --mime, --scheme, or --browser is required", 2)
+	assertJSONError(t, &stdout, "one of --mime, --scheme, --content-type, or --browser is required", 2)
 }
 
 func TestGetRequiresTargetTextError(t *testing.T) {
@@ -2113,7 +2170,7 @@ func TestGetRequiresTargetTextError(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "one of --mime, --scheme, or --browser is required") {
+	if !strings.Contains(stderr.String(), "one of --mime, --scheme, --content-type, or --browser is required") {
 		t.Fatalf("stderr=%s", stderr.String())
 	}
 	if stdout.Len() != 0 {
@@ -2231,7 +2288,7 @@ func TestOpenTestRequiresTarget(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "one of --mime, --scheme, --browser, or --callback is required") {
+	if !strings.Contains(stderr.String(), "one of --mime, --scheme, --content-type, --browser, or --callback is required") {
 		t.Fatalf("stderr=%s", stderr.String())
 	}
 	if stdout.Len() != 0 {
@@ -2245,7 +2302,7 @@ func TestOpenTestRequiresTargetJSON(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
-	assertJSONError(t, &stdout, "one of --mime, --scheme, --browser, or --callback is required", 2)
+	assertJSONError(t, &stdout, "one of --mime, --scheme, --content-type, --browser, or --callback is required", 2)
 	if stderr.Len() != 0 {
 		t.Fatalf("expected JSON target validation path, got stderr=%s", stderr.String())
 	}
@@ -2619,7 +2676,7 @@ func TestDoctorJSONValidationError(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("code=%d stderr=%s", code, stderr.String())
 	}
-	assertJSONError(t, &stdout, "requires --browser", 2)
+	assertJSONError(t, &stdout, "doctor requires exactly one scope flag", 2)
 }
 
 func TestDoctorJSONParseError(t *testing.T) {
@@ -2821,6 +2878,96 @@ func TestDoctorBrowserFixJSON(t *testing.T) {
 	}
 	if !payload.Fix.Changed || !payload.Status.Changed || payload.Status.DryRun {
 		t.Fatalf("payload=%+v", payload)
+	}
+}
+
+func TestDoctorMutuallyExclusiveScopeFlags(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := runWithProvider([]string{"doctor", "--browser", "--mime", "text/html"}, &fakeProvider{}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("code=%d stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "mutually exclusive") {
+		t.Fatalf("stderr=%s", stderr.String())
+	}
+}
+
+func TestDoctorMIMEScopeFlag(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := runWithProvider([]string{"doctor", "--mime", "text/html", "--json"}, &fakeProvider{}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("code=%d stderr=%s", code, stderr.String())
+	}
+	var payload struct {
+		Report defaults.DoctorReport `json:"report"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Report.Scope != "mime:text/html" {
+		t.Fatalf("scope=%s", payload.Report.Scope)
+	}
+}
+
+func TestDoctorSchemeScopeFlag(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := runWithProvider([]string{"doctor", "--scheme", "https", "--json"}, &fakeProvider{}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("code=%d stderr=%s", code, stderr.String())
+	}
+	var payload struct {
+		Report defaults.DoctorReport `json:"report"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Report.Scope != "scheme:https" {
+		t.Fatalf("scope=%s", payload.Report.Scope)
+	}
+}
+
+func TestDoctorContentTypeScopeFlag(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := runWithProvider([]string{"doctor", "--content-type", "public.html", "--json"}, &fakeProvider{}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("code=%d stderr=%s", code, stderr.String())
+	}
+	var payload struct {
+		Report defaults.DoctorReport `json:"report"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Report.Scope != "content_type:public.html" {
+		t.Fatalf("scope=%s", payload.Report.Scope)
+	}
+}
+
+func TestDoctorAllScopeFlag(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := runWithProvider([]string{"doctor", "--all", "--json"}, &fakeProvider{}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("code=%d stderr=%s", code, stderr.String())
+	}
+	var payload struct {
+		Report defaults.DoctorReport `json:"report"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Report.Scope != "all" {
+		t.Fatalf("scope=%s", payload.Report.Scope)
+	}
+}
+
+func TestSetSystemFlagRequiresRoot(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := runWithProvider([]string{"set", "--browser", "--app", "firefox.desktop", "--system"}, &fakeProvider{}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("code=%d stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "root") {
+		t.Fatalf("stderr=%s", stderr.String())
 	}
 }
 
@@ -3362,7 +3509,7 @@ func TestRunGlobalJSONThenOpenTestJSONFalseUsesNonJSON(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("code=%d stderr=%s", code, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "one of --mime, --scheme, --browser, or --callback is required") {
+	if !strings.Contains(stderr.String(), "one of --mime, --scheme, --content-type, --browser, or --callback is required") {
 		t.Fatalf("stderr=%s", stderr.String())
 	}
 	if stdout.Len() != 0 {
@@ -3376,7 +3523,7 @@ func TestRunShortJSONThenOpenTestJSONFalseUsesNonJSON(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("code=%d stderr=%s", code, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "one of --mime, --scheme, --browser, or --callback is required") {
+	if !strings.Contains(stderr.String(), "one of --mime, --scheme, --content-type, --browser, or --callback is required") {
 		t.Fatalf("stderr=%s", stderr.String())
 	}
 	if stdout.Len() != 0 {
@@ -3444,7 +3591,7 @@ func TestRunShortGlobalJSONBeforeOpenTestRequiresTargetUsesJSON(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("code=%d stderr=%s", code, stderr.String())
 	}
-	assertJSONError(t, &stdout, "one of --mime, --scheme, --browser, or --callback is required", 2)
+	assertJSONError(t, &stdout, "one of --mime, --scheme, --content-type, --browser, or --callback is required", 2)
 	if stderr.Len() != 0 {
 		t.Fatalf("expected no stderr for JSON output: %s", stderr.String())
 	}
@@ -3480,7 +3627,7 @@ func TestRunShortGlobalJSONFalseBeforeOpenTestRequiresTargetUsesNonJSON(t *testi
 	if code != 2 {
 		t.Fatalf("code=%d stderr=%s", code, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "one of --mime, --scheme, --browser, or --callback is required") {
+	if !strings.Contains(stderr.String(), "one of --mime, --scheme, --content-type, --browser, or --callback is required") {
 		t.Fatalf("stderr=%s", stderr.String())
 	}
 	if stdout.Len() != 0 {
@@ -3748,7 +3895,7 @@ func TestRunGlobalJSONBeforeDoctorRequiresBrowserUsesJSON(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("code=%d stderr=%s", code, stderr.String())
 	}
-	assertJSONError(t, &stdout, "doctor currently requires --browser", 2)
+	assertJSONError(t, &stdout, "doctor requires exactly one scope flag; one of --browser, --mime, --scheme, --content-type, or --all is required", 2)
 	if stderr.Len() != 0 {
 		t.Fatalf("expected no stderr for JSON output: %s", stderr.String())
 	}
@@ -3760,7 +3907,7 @@ func TestRunShortGlobalJSONBeforeDoctorRequiresBrowserUsesJSON(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("code=%d stderr=%s", code, stderr.String())
 	}
-	assertJSONError(t, &stdout, "doctor currently requires --browser", 2)
+	assertJSONError(t, &stdout, "doctor requires exactly one scope flag; one of --browser, --mime, --scheme, --content-type, or --all is required", 2)
 	if stderr.Len() != 0 {
 		t.Fatalf("expected no stderr for JSON output: %s", stderr.String())
 	}
@@ -3784,7 +3931,7 @@ func TestRunGlobalJSONThenDoctorJSONFalseUsesNonJSON(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("code=%d stderr=%s", code, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "doctor currently requires --browser") {
+	if !strings.Contains(stderr.String(), "doctor requires exactly one scope flag; one of --browser, --mime, --scheme, --content-type, or --all is required") {
 		t.Fatalf("stderr=%s", stderr.String())
 	}
 	if stdout.Len() != 0 {

@@ -5,6 +5,7 @@ package defaults
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -30,7 +31,7 @@ func newDarwinProvider() Provider {
 
 func (p darwinProvider) Inspect(context.Context) InspectReport {
 	canRead := p.canReadLaunchServices()
-	canWrite := darwinNativeWritesAvailable() || p.dutiAvailable()
+	canWrite := darwinNativeWritesAvailable() || p.dutiAvailable() || p.osascriptAvailable()
 	report := InspectReport{
 		Platform: "darwin",
 		Provider: "launchservices",
@@ -87,38 +88,51 @@ func (p darwinProvider) Get(ctx context.Context, target Target) (string, error) 
 	if target.Kind == KindBrowser {
 		query = Target{Kind: KindScheme, Value: "http"}
 	}
+	if target.Kind == KindMIME {
+		contentTypes := darwinContentTypesForWrite(target.Value)
+		if len(contentTypes) > 0 {
+			query = Target{Kind: KindContentType, Value: contentTypes[0]}
+		}
+	}
 	return p.getFromLaunchServices(ctx, query)
 }
 
 func (p darwinProvider) Doctor(ctx context.Context, options DoctorOptions) (DoctorReport, error) {
-	if !options.Browser {
-		return DoctorReport{}, fmt.Errorf("doctor currently requires --browser")
+	if options.Browser {
+		return p.doctorForBrowserDefaults(ctx)
 	}
-	return p.doctorForBrowserDefaults(ctx)
+	if options.ContentType != "" {
+		return p.darwinDoctorContentType(ctx, options.ContentType)
+	}
+	if options.MIME != "" {
+		return p.darwinDoctorMIME(ctx, options.MIME)
+	}
+	if options.Scheme != "" {
+		return p.darwinDoctorScheme(ctx, options.Scheme)
+	}
+	if options.All {
+		return p.darwinDoctorAll(ctx)
+	}
+	return DoctorReport{}, fmt.Errorf("macOS doctor requires a scope flag")
 }
 
 func (p darwinProvider) DoctorFix(ctx context.Context, options DoctorFixOptions) (DoctorFixResult, error) {
-	if !options.Browser {
-		return DoctorFixResult{}, fmt.Errorf("macOS doctor fix currently requires --browser")
+	if options.Browser {
+		return p.darwinDoctorFixBrowser(ctx, options)
 	}
-	operations := []string{
-		"Open System Settings > Desktop & Dock and set the intended default web browser",
-		"Verify http and https scheme handlers match the selected browser bundle identifier",
-		"Verify text/html and application/xhtml+xml LaunchServices role handlers match the selected browser",
-		"Re-run dfx doctor --browser after browser updates or LaunchServices cache rebuilds",
+	if options.ContentType != "" {
+		return p.darwinDoctorFixContentType(ctx, options, options.ContentType)
 	}
-	operations = appendFindingRemediationOperations(ctx, p, operations)
-	if options.DryRun {
-		return DoctorFixResult{Changed: false, Operations: operations}, nil
+	if options.MIME != "" {
+		return p.darwinDoctorFixMIME(ctx, options, options.MIME)
 	}
-	app, err := p.Get(ctx, Target{Kind: KindBrowser})
-	if err != nil {
-		return DoctorFixResult{Operations: operations}, fmt.Errorf("macOS doctor fix could not determine the current browser default to reapply: %w", err)
+	if options.Scheme != "" {
+		return p.darwinDoctorFixScheme(ctx, options, options.Scheme)
 	}
-	operations = append(operations, fmt.Sprintf("Use current HTTP default as LaunchServices fix target: %s", app))
-	setResult, err := p.Set(ctx, Association{Kind: KindBrowser, Value: "default", App: app}, SetOptions{})
-	operations = append(operations, setResult.Operations...)
-	return DoctorFixResult{Changed: setResult.Changed, Operations: operations}, err
+	if options.All {
+		return p.darwinDoctorFixAll(ctx, options)
+	}
+	return DoctorFixResult{}, fmt.Errorf("macOS doctor fix requires a scope flag")
 }
 
 func (p darwinProvider) Set(ctx context.Context, association Association, options SetOptions) (SetResult, error) {
@@ -127,6 +141,10 @@ func (p darwinProvider) Set(ctx context.Context, association Association, option
 		return SetResult{}, err
 	}
 	operations := p.darwinSetGuidanceOperations(association)
+	if options.System {
+		operations = append(operations, "System-level defaults on macOS require MDM or manual System Settings configuration")
+		return SetResult{Changed: false, Operations: operations}, errors.New("macOS system-level defaults are not modifiable via CLI; use MDM or System Settings")
+	}
 	if options.DryRun {
 		return SetResult{Changed: false, Operations: operations}, nil
 	}
@@ -462,6 +480,531 @@ func (p darwinProvider) doctorForBrowserDefaults(ctx context.Context) (DoctorRep
 	}
 
 	return report, nil
+}
+
+func (p darwinProvider) darwinDoctorContentType(ctx context.Context, uti string) (DoctorReport, error) {
+	if !p.canReadLaunchServices() {
+		return DoctorReport{}, p.darwinUnsupportedOperation("doctor")
+	}
+
+	handlers, handlersErr := p.loadLaunchServicesHandlers(ctx)
+	report := DoctorReport{
+		Platform: "darwin",
+		Scope:    "content-type:" + uti,
+		Healthy:  true,
+		Notes: []string{
+			"checks validate content-type handler cache state",
+		},
+	}
+
+	addFinding := func(id, severity, summary, details, remediation string) {
+		if !strings.EqualFold(severity, "info") && !strings.EqualFold(severity, "warning") {
+			report.Healthy = false
+		}
+		report.Findings = append(report.Findings, DoctorFinding{
+			ID:          id,
+			Severity:    severity,
+			Summary:     summary,
+			Details:     details,
+			Remediation: remediation,
+		})
+	}
+	if handlersErr != nil {
+		addFinding("M23", "error", "LaunchServices cache is unreadable or malformed", handlersErr.Error(), "rebuild LaunchServices cache and rerun dfx")
+		return report, nil
+	}
+
+	target := Target{Kind: KindContentType, Value: uti}
+	roles, rolesErr := p.targetRoleHandlersFromHandlers(target, handlers)
+	app := p.selectRoleHandler(roles)
+
+	if rolesErr != nil {
+		addFinding("M31", "error", "content-type handler missing", fmt.Sprintf("%s: %v", uti, rolesErr.Error()), "set content-type handler in macOS settings or via a native LaunchServices flow")
+	} else {
+		if hasRoleMismatch(roles) {
+			addFinding("M31", "warning", "content-type role handlers differ", roleSummary(roles), "verify role handler declarations in app LaunchServices metadata")
+		}
+		if issue, err := p.getTargetRoleCollisionFromHandlers(target, handlers); err == nil && issue != "" {
+			addFinding("M24", "warning", "duplicate role handlers for content type", issue, "remove duplicate LaunchServices entries and ensure one authoritative content-type assignment")
+		}
+	}
+
+	canInspectBundles := p.runnerOrDefaultHas("osascript")
+	if !canInspectBundles {
+		addFinding("M19", "warning", "undocumented/undetected environment tooling limits manifest checks", "osascript is missing, so bundle ID validation and Info.plist inspection are unavailable", "install or run from macOS scripting environment to enable full manifest verification")
+		report.Notes = append(report.Notes, "bundle-id existence checks are limited because osascript is not available")
+	}
+
+	if app != "" && canInspectBundles {
+		if !p.bundleIDLooksInstalled(ctx, app) {
+			addFinding("M31", "warning", "content-type handler bundle ID may not be installed", fmt.Sprintf("%s is not resolvable through osascript", app), "correct stale bundle identifiers and re-run dfx")
+			addFinding("M09", "warning", "stale LaunchServices reference remains after uninstall", fmt.Sprintf("%s is no longer resolvable", app), "clear stale launch service entries and reassign defaults")
+		} else {
+			bundlePath, err := p.bundlePathForID(ctx, app)
+			if err != nil {
+				addFinding("M17", "warning", "unable to resolve content-type handler bundle path", fmt.Sprintf("%s path resolution failed: %v", app, err), "correct handler registration and rerun dfx")
+			} else {
+				plist, err := p.readAppInfoPlistFromPath(ctx, app, bundlePath)
+				if err != nil {
+					addFinding("M17", "warning", "unable to read app manifest claims", fmt.Sprintf("%s manifest inspection failed: %v", app, err), "validate app registration and re-run dfx")
+				} else {
+					declared := darwinDeclaredContentTypesFromInfo(plist)
+					found := false
+					for _, alias := range normalizeMacContentType(uti) {
+						if _, ok := declared[strings.ToLower(alias)]; ok {
+							found = true
+							break
+						}
+					}
+					if !found {
+						addFinding("M18", "warning", "app manifest lacks matching document-type declaration", fmt.Sprintf("%s does not declare %s in CFBundleDocumentTypes", app, uti), "verify CFBundleDocumentTypes and re-register handler after updates")
+					}
+					malformedURLTypes, malformedDocumentTypes := darwinMalformedManifestDeclarationIssues(plist)
+					if len(malformedDocumentTypes) != 0 {
+						addFinding("M18", "warning", "app manifest has malformed document-type declarations", fmt.Sprintf("%s: %s", app, strings.Join(malformedDocumentTypes, "; ")), "repair CFBundleDocumentTypes so each entry declares LSItemContentTypes or valid file extensions, then re-register the app")
+					}
+					_ = malformedURLTypes
+				}
+			}
+		}
+	}
+
+	systemHandlers, err := p.loadLaunchServicesHandlersFromPath(ctx, p.launchServicesSystemPlistPath())
+	if err == nil && app != "" {
+		systemRoles, err := p.targetRoleHandlersFromHandlers(target, systemHandlers)
+		if err == nil && len(systemRoles) > 0 {
+			systemApp := p.selectRoleHandler(systemRoles)
+			if systemApp != "" && !strings.EqualFold(systemApp, app) {
+				addFinding("M14", "warning", "per-user/system default handler domains differ", fmt.Sprintf("%s: user=%q, system=%q", uti, app, systemApp), "align user and system Launch Services registrations by rebuilding defaults")
+			}
+		}
+	}
+
+	if mdmSignals := p.macosMDMLaunchServicesSignals(ctx); len(mdmSignals) > 0 {
+		addFinding("M12", "warning", "MDM-managed LaunchServices policy may constrain defaults", strings.Join(mdmSignals, "; "), "review managed configuration policy for allowed default-app changes")
+	}
+
+	relatedAliases := normalizeMacContentType(uti)
+	if len(relatedAliases) > 1 {
+		assignments := map[string]string{}
+		for _, alias := range relatedAliases {
+			aliasRoles, err := p.targetRoleHandlersFromHandlers(Target{Kind: KindContentType, Value: alias}, handlers)
+			if err != nil {
+				continue
+			}
+			aliasApp := p.selectRoleHandler(aliasRoles)
+			if aliasApp != "" {
+				assignments[alias] = aliasApp
+			}
+		}
+		if len(assignments) > 1 {
+			distinct := uniqueNonEmptyValues(valuesFromMap(assignments))
+			if len(distinct) > 1 {
+				items := make([]string, 0, len(assignments))
+				for alias, handlerApp := range assignments {
+					items = append(items, fmt.Sprintf("%s=%q", alias, handlerApp))
+				}
+				sort.Strings(items)
+				addFinding("M31", "warning", "UTI inheritance mismatch for content type aliases", strings.Join(items, "; "), "re-check declared UTIs in the handler Info.plist for compatibility")
+			}
+		}
+	}
+
+	return report, nil
+}
+
+func (p darwinProvider) darwinDoctorScheme(ctx context.Context, scheme string) (DoctorReport, error) {
+	if !p.canReadLaunchServices() {
+		return DoctorReport{}, p.darwinUnsupportedOperation("doctor")
+	}
+
+	handlers, handlersErr := p.loadLaunchServicesHandlers(ctx)
+	report := DoctorReport{
+		Platform: "darwin",
+		Scope:    "scheme:" + scheme,
+		Healthy:  true,
+		Notes: []string{
+			"checks validate scheme handler cache state",
+		},
+	}
+
+	addFinding := func(id, severity, summary, details, remediation string) {
+		if !strings.EqualFold(severity, "info") && !strings.EqualFold(severity, "warning") {
+			report.Healthy = false
+		}
+		report.Findings = append(report.Findings, DoctorFinding{
+			ID:          id,
+			Severity:    severity,
+			Summary:     summary,
+			Details:     details,
+			Remediation: remediation,
+		})
+	}
+	if handlersErr != nil {
+		addFinding("M23", "error", "LaunchServices cache is unreadable or malformed", handlersErr.Error(), "rebuild LaunchServices cache and rerun dfx")
+		return report, nil
+	}
+
+	target := Target{Kind: KindScheme, Value: scheme}
+	roles, rolesErr := p.targetRoleHandlersFromHandlers(target, handlers)
+	app := p.selectRoleHandler(roles)
+
+	if rolesErr != nil {
+		addFinding("M32", "error", "scheme handler missing", fmt.Sprintf("%s: %v", scheme, rolesErr.Error()), "set scheme handler in macOS settings or via a native LaunchServices flow")
+	} else {
+		if hasRoleMismatch(roles) {
+			addFinding("M32", "warning", "scheme role handlers differ", roleSummary(roles), "verify role handler declarations in app LaunchServices metadata")
+		}
+		if issue, err := p.getTargetRoleCollisionFromHandlers(target, handlers); err == nil && issue != "" {
+			addFinding("M24", "warning", "duplicate role handlers for scheme", issue, "remove duplicate LaunchServices entries and ensure one authoritative scheme assignment")
+		}
+	}
+
+	canInspectBundles := p.runnerOrDefaultHas("osascript")
+	if !canInspectBundles {
+		addFinding("M19", "warning", "undocumented/undetected environment tooling limits manifest checks", "osascript is missing, so bundle ID validation and Info.plist inspection are unavailable", "install or run from macOS scripting environment to enable full manifest verification")
+		report.Notes = append(report.Notes, "bundle-id existence checks are limited because osascript is not available")
+	}
+
+	if app != "" && canInspectBundles {
+		if !p.bundleIDLooksInstalled(ctx, app) {
+			addFinding("M32", "warning", "scheme handler bundle ID may not be installed", fmt.Sprintf("%s is not resolvable through osascript", app), "correct stale bundle identifiers and re-run dfx")
+			addFinding("M09", "warning", "stale LaunchServices reference remains after uninstall", fmt.Sprintf("%s is no longer resolvable", app), "clear stale launch service entries and reassign defaults")
+		} else {
+			bundlePath, err := p.bundlePathForID(ctx, app)
+			if err != nil {
+				addFinding("M17", "warning", "unable to resolve scheme handler bundle path", fmt.Sprintf("%s path resolution failed: %v", app, err), "correct handler registration and rerun dfx")
+			} else {
+				plist, err := p.readAppInfoPlistFromPath(ctx, app, bundlePath)
+				if err != nil {
+					addFinding("M17", "warning", "unable to read app manifest claims", fmt.Sprintf("%s manifest inspection failed: %v", app, err), "validate app registration and re-run dfx")
+				} else {
+					declared := darwinDeclaredSchemesFromInfo(plist)
+					if _, ok := declared[strings.ToLower(scheme)]; !ok {
+						addFinding("M03", "warning", "app manifest lacks matching URL scheme declaration", fmt.Sprintf("%s does not declare %s in CFBundleURLTypes", app, scheme), "verify CFBundleURLTypes and re-register handler for this target")
+					}
+					malformedURLTypes, malformedDocumentTypes := darwinMalformedManifestDeclarationIssues(plist)
+					if len(malformedURLTypes) != 0 {
+						addFinding("M17", "warning", "app manifest has malformed URL-type declarations", fmt.Sprintf("%s: %s", app, strings.Join(malformedURLTypes, "; ")), "repair CFBundleURLTypes so each entry has valid CFBundleURLSchemes values, then re-register the app")
+					}
+					_ = malformedDocumentTypes
+				}
+			}
+		}
+	}
+
+	systemHandlers, err := p.loadLaunchServicesHandlersFromPath(ctx, p.launchServicesSystemPlistPath())
+	if err == nil && app != "" {
+		systemRoles, err := p.targetRoleHandlersFromHandlers(target, systemHandlers)
+		if err == nil && len(systemRoles) > 0 {
+			systemApp := p.selectRoleHandler(systemRoles)
+			if systemApp != "" && !strings.EqualFold(systemApp, app) {
+				addFinding("M14", "warning", "per-user/system default handler domains differ", fmt.Sprintf("%s: user=%q, system=%q", scheme, app, systemApp), "align user and system Launch Services registrations by rebuilding defaults")
+			}
+		}
+	}
+
+	if callbackScheme := normalizeCallbackScheme(os.Getenv("DFX_CALLBACK_SCHEME")); callbackScheme != "" && strings.EqualFold(callbackScheme, scheme) {
+		if rolesErr != nil {
+			addFinding("M30", "warning", "configured callback scheme is unset", scheme, "set DFX_CALLBACK_SCHEME to a URI scheme mapped to your native callback handler")
+		} else if app != "" {
+			httpRoles, _ := p.targetRoleHandlersFromHandlers(Target{Kind: KindScheme, Value: "http"}, handlers)
+			httpsRoles, _ := p.targetRoleHandlersFromHandlers(Target{Kind: KindScheme, Value: "https"}, handlers)
+			httpApp := p.selectRoleHandler(httpRoles)
+			httpsApp := p.selectRoleHandler(httpsRoles)
+			if (httpApp != "" && strings.EqualFold(app, httpApp)) || (httpsApp != "" && strings.EqualFold(app, httpsApp)) {
+				addFinding("M30", "warning", "callback scheme maps to browser default", fmt.Sprintf("%s -> %q", scheme, app), "point the callback scheme to native app handler to avoid browser redirection loop")
+			}
+		}
+	}
+
+	return report, nil
+}
+
+func (p darwinProvider) darwinDoctorMIME(ctx context.Context, mime string) (DoctorReport, error) {
+	contentTypes := darwinContentTypesForWrite(mime)
+	if len(contentTypes) == 0 {
+		return DoctorReport{}, fmt.Errorf("no writable LaunchServices content type found for MIME %q", mime)
+	}
+	var allFindings []DoctorFinding
+	var allNotes []string
+	healthy := true
+	for _, ct := range contentTypes {
+		report, err := p.darwinDoctorContentType(ctx, ct)
+		if err != nil {
+			return DoctorReport{}, err
+		}
+		if !report.Healthy {
+			healthy = false
+		}
+		allFindings = append(allFindings, report.Findings...)
+		allNotes = append(allNotes, report.Notes...)
+	}
+	return DoctorReport{
+		Platform: "darwin",
+		Scope:    "mime:" + mime,
+		Healthy:  healthy,
+		Findings: allFindings,
+		Notes:    uniqueNonEmptyValues(allNotes),
+	}, nil
+}
+
+func (p darwinProvider) darwinDoctorAll(ctx context.Context) (DoctorReport, error) {
+	browserReport, err := p.doctorForBrowserDefaults(ctx)
+	if err != nil {
+		return DoctorReport{}, err
+	}
+
+	handlers, handlersErr := p.loadLaunchServicesHandlers(ctx)
+	if handlersErr != nil {
+		browserReport.Scope = "all"
+		browserReport.Notes = append(browserReport.Notes, "could not enumerate additional associations due to LaunchServices cache read failure")
+		return browserReport, nil
+	}
+
+	schemeSet := map[string]struct{}{}
+	contentTypeSet := map[string]struct{}{}
+	for _, handler := range handlers {
+		if scheme := stringValue(handler["LSHandlerURLScheme"]); scheme != "" {
+			schemeSet[strings.ToLower(scheme)] = struct{}{}
+		}
+		if ct := stringValue(handler["LSHandlerContentType"]); ct != "" {
+			contentTypeSet[strings.ToLower(ct)] = struct{}{}
+		}
+	}
+
+	delete(schemeSet, "http")
+	delete(schemeSet, "https")
+	delete(contentTypeSet, "text/html")
+	delete(contentTypeSet, "public.html")
+	delete(contentTypeSet, "application/xhtml+xml")
+	delete(contentTypeSet, "public.xhtml")
+	delete(contentTypeSet, "public.xhtml+xml")
+
+	type assoc struct {
+		kind  string
+		value string
+	}
+	var associations []assoc
+	for scheme := range schemeSet {
+		associations = append(associations, assoc{kind: "scheme", value: scheme})
+	}
+	for ct := range contentTypeSet {
+		associations = append(associations, assoc{kind: "content-type", value: ct})
+	}
+
+	const maxAssoc = 50
+	capped := false
+	if len(associations) > maxAssoc {
+		associations = associations[:maxAssoc]
+		capped = true
+	}
+
+	sort.Slice(associations, func(i, j int) bool {
+		if associations[i].kind != associations[j].kind {
+			return associations[i].kind < associations[j].kind
+		}
+		return associations[i].value < associations[j].value
+	})
+
+	allFindings := append([]DoctorFinding{}, browserReport.Findings...)
+	allNotes := append([]string{}, browserReport.Notes...)
+	healthy := browserReport.Healthy
+
+	for _, assoc := range associations {
+		var subReport DoctorReport
+		var subErr error
+		if assoc.kind == "scheme" {
+			subReport, subErr = p.darwinDoctorScheme(ctx, assoc.value)
+		} else {
+			subReport, subErr = p.darwinDoctorContentType(ctx, assoc.value)
+		}
+		if subErr != nil {
+			continue
+		}
+		if !subReport.Healthy {
+			healthy = false
+		}
+		allFindings = append(allFindings, subReport.Findings...)
+		allNotes = append(allNotes, subReport.Notes...)
+	}
+
+	report := DoctorReport{
+		Platform: "darwin",
+		Scope:    "all",
+		Healthy:  healthy,
+		Findings: allFindings,
+		Notes:    uniqueNonEmptyValues(allNotes),
+	}
+	if capped {
+		report.Notes = append(report.Notes, fmt.Sprintf("association enumeration capped at %d total associations; not all configured associations were checked", maxAssoc))
+	}
+	return report, nil
+}
+
+func (p darwinProvider) darwinDoctorFixBrowser(ctx context.Context, options DoctorFixOptions) (DoctorFixResult, error) {
+	operations := []string{
+		"Open System Settings > Desktop & Dock and set the intended default web browser",
+		"Verify http and https scheme handlers match the selected browser bundle identifier",
+		"Verify text/html and application/xhtml+xml LaunchServices role handlers match the selected browser",
+		"Re-run dfx doctor --browser after browser updates or LaunchServices cache rebuilds",
+	}
+	operations = appendFindingRemediationOperations(ctx, p, operations)
+	if options.DryRun {
+		return DoctorFixResult{Changed: false, Operations: operations}, nil
+	}
+	app, err := p.Get(ctx, Target{Kind: KindBrowser})
+	if err != nil {
+		return DoctorFixResult{Operations: operations}, fmt.Errorf("macOS doctor fix could not determine the current browser default to reapply: %w", err)
+	}
+	operations = append(operations, fmt.Sprintf("Use current HTTP default as LaunchServices fix target: %s", app))
+	setResult, err := p.Set(ctx, Association{Kind: KindBrowser, Value: "default", App: app}, SetOptions{})
+	operations = append(operations, setResult.Operations...)
+	return DoctorFixResult{Changed: setResult.Changed, Operations: operations}, err
+}
+
+func (p darwinProvider) darwinDoctorFixContentType(ctx context.Context, options DoctorFixOptions, uti string) (DoctorFixResult, error) {
+	operations := []string{
+		fmt.Sprintf("Verify %s LaunchServices role handler is set to the intended application", uti),
+		"Re-run dfx doctor --content-type after handler updates or LaunchServices cache rebuilds",
+	}
+	if options.DryRun {
+		return DoctorFixResult{Changed: false, Operations: operations}, nil
+	}
+	app, err := p.Get(ctx, Target{Kind: KindContentType, Value: uti})
+	if err != nil {
+		return DoctorFixResult{Operations: operations}, fmt.Errorf("macOS doctor fix could not determine the current content-type default to reapply: %w", err)
+	}
+	operations = append(operations, fmt.Sprintf("Use current %s default as LaunchServices fix target: %s", uti, app))
+	setResult, err := p.Set(ctx, Association{Kind: KindContentType, Value: uti, App: app}, SetOptions{})
+	operations = append(operations, setResult.Operations...)
+	return DoctorFixResult{Changed: setResult.Changed, Operations: operations}, err
+}
+
+func (p darwinProvider) darwinDoctorFixMIME(ctx context.Context, options DoctorFixOptions, mime string) (DoctorFixResult, error) {
+	contentTypes := darwinContentTypesForWrite(mime)
+	if len(contentTypes) == 0 {
+		return DoctorFixResult{}, fmt.Errorf("no writable LaunchServices content type found for MIME %q", mime)
+	}
+	operations := []string{}
+	changed := false
+	for _, ct := range contentTypes {
+		result, err := p.darwinDoctorFixContentType(ctx, options, ct)
+		operations = append(operations, result.Operations...)
+		if result.Changed {
+			changed = true
+		}
+		if err != nil {
+			return DoctorFixResult{Changed: changed, Operations: operations}, err
+		}
+	}
+	return DoctorFixResult{Changed: changed, Operations: operations}, nil
+}
+
+func (p darwinProvider) darwinDoctorFixScheme(ctx context.Context, options DoctorFixOptions, scheme string) (DoctorFixResult, error) {
+	operations := []string{
+		fmt.Sprintf("Verify %s scheme handler is set to the intended application", scheme),
+		"Re-run dfx doctor --scheme after handler updates or LaunchServices cache rebuilds",
+	}
+	if options.DryRun {
+		return DoctorFixResult{Changed: false, Operations: operations}, nil
+	}
+	app, err := p.Get(ctx, Target{Kind: KindScheme, Value: scheme})
+	if err != nil {
+		return DoctorFixResult{Operations: operations}, fmt.Errorf("macOS doctor fix could not determine the current scheme default to reapply: %w", err)
+	}
+	operations = append(operations, fmt.Sprintf("Use current %s default as LaunchServices fix target: %s", scheme, app))
+	setResult, err := p.Set(ctx, Association{Kind: KindScheme, Value: scheme, App: app}, SetOptions{})
+	operations = append(operations, setResult.Operations...)
+	return DoctorFixResult{Changed: setResult.Changed, Operations: operations}, err
+}
+
+func (p darwinProvider) darwinDoctorFixAll(ctx context.Context, options DoctorFixOptions) (DoctorFixResult, error) {
+	browserFix, err := p.darwinDoctorFixBrowser(ctx, options)
+	operations := append([]string{}, browserFix.Operations...)
+	changed := browserFix.Changed
+	if err != nil {
+		return DoctorFixResult{Changed: changed, Operations: operations}, err
+	}
+
+	handlers, handlersErr := p.loadLaunchServicesHandlers(ctx)
+	if handlersErr != nil {
+		operations = append(operations, "Could not enumerate additional associations for fix due to LaunchServices cache read failure")
+		return DoctorFixResult{Changed: changed, Operations: operations}, nil
+	}
+
+	schemeSet := map[string]struct{}{}
+	contentTypeSet := map[string]struct{}{}
+	for _, handler := range handlers {
+		if scheme := stringValue(handler["LSHandlerURLScheme"]); scheme != "" {
+			schemeSet[strings.ToLower(scheme)] = struct{}{}
+		}
+		if ct := stringValue(handler["LSHandlerContentType"]); ct != "" {
+			contentTypeSet[strings.ToLower(ct)] = struct{}{}
+		}
+	}
+	delete(schemeSet, "http")
+	delete(schemeSet, "https")
+	delete(contentTypeSet, "text/html")
+	delete(contentTypeSet, "public.html")
+	delete(contentTypeSet, "application/xhtml+xml")
+	delete(contentTypeSet, "public.xhtml")
+	delete(contentTypeSet, "public.xhtml+xml")
+
+	type assoc struct {
+		kind  string
+		value string
+	}
+	var associations []assoc
+	for s := range schemeSet {
+		associations = append(associations, assoc{kind: "scheme", value: s})
+	}
+	for ct := range contentTypeSet {
+		associations = append(associations, assoc{kind: "content-type", value: ct})
+	}
+	const maxAssoc = 50
+	if len(associations) > maxAssoc {
+		associations = associations[:maxAssoc]
+		operations = append(operations, fmt.Sprintf("fix association enumeration capped at %d total associations", maxAssoc))
+	}
+	sort.Slice(associations, func(i, j int) bool {
+		if associations[i].kind != associations[j].kind {
+			return associations[i].kind < associations[j].kind
+		}
+		return associations[i].value < associations[j].value
+	})
+
+	for _, assoc := range associations {
+		var app string
+		var err error
+		if assoc.kind == "scheme" {
+			app, err = p.Get(ctx, Target{Kind: KindScheme, Value: assoc.value})
+		} else {
+			app, err = p.Get(ctx, Target{Kind: KindContentType, Value: assoc.value})
+		}
+		if err != nil {
+			operations = append(operations, fmt.Sprintf("Could not determine current default for %s %s: %v", assoc.kind, assoc.value, err))
+			continue
+		}
+		operations = append(operations, fmt.Sprintf("Re-apply %s default: %s -> %s", assoc.kind, assoc.value, app))
+		if !options.DryRun {
+			var setResult SetResult
+			if assoc.kind == "scheme" {
+				setResult, err = p.Set(ctx, Association{Kind: KindScheme, Value: assoc.value, App: app}, SetOptions{})
+			} else {
+				setResult, err = p.Set(ctx, Association{Kind: KindContentType, Value: assoc.value, App: app}, SetOptions{})
+			}
+			operations = append(operations, setResult.Operations...)
+			if setResult.Changed {
+				changed = true
+			}
+			if err != nil {
+				operations = append(operations, fmt.Sprintf("Failed to re-apply %s %s: %v", assoc.kind, assoc.value, err))
+			}
+		}
+	}
+
+	return DoctorFixResult{Changed: changed, Operations: operations}, nil
 }
 
 func (p darwinProvider) getFromLaunchServices(ctx context.Context, target Target) (string, error) {
@@ -859,6 +1402,8 @@ func (p darwinProvider) matchesTarget(target Target, handler map[string]any) boo
 			}
 		}
 		return false
+	case KindContentType:
+		return strings.EqualFold(stringValue(handler["LSHandlerContentType"]), target.Value)
 	default:
 		return false
 	}
@@ -1740,7 +2285,10 @@ func (p darwinProvider) darwinUnsupportedOperation(operation string) error {
 	if p.dutiAvailable() {
 		return fmt.Errorf("macOS %s could not apply LaunchServices writes with the available backend; use --dry-run to review System Settings guidance and emitted duti-style commands", operation)
 	}
-	return fmt.Errorf("macOS %s requires native LaunchServices support or duti (`brew install duti`) to apply writes; use --dry-run for System Settings guidance", operation)
+	if p.osascriptAvailable() {
+		return fmt.Errorf("macOS %s failed with all available backends (native/helper/duti/osascript); use --dry-run for System Settings guidance", operation)
+	}
+	return fmt.Errorf("macOS %s requires native LaunchServices support, duti (`brew install duti`), or osascript to apply writes; use --dry-run for System Settings guidance", operation)
 }
 
 func (p darwinProvider) applyDarwinLaunchServicesAssociation(ctx context.Context, association Association) ([]string, bool, error) {
@@ -1748,7 +2296,8 @@ func (p darwinProvider) applyDarwinLaunchServicesAssociation(ctx context.Context
 	targets := darwinTargetsForAssociation(association.Target())
 	nativeAvailable := darwinNativeWritesAvailable()
 	dutiAvailable := p.dutiAvailable()
-	if !nativeAvailable && !dutiAvailable {
+	osascriptAvailable := p.osascriptAvailable()
+	if !nativeAvailable && !dutiAvailable && !osascriptAvailable {
 		return operations, false, p.darwinUnsupportedOperation("set")
 	}
 
@@ -1761,15 +2310,28 @@ func (p darwinProvider) applyDarwinLaunchServicesAssociation(ctx context.Context
 					operations = append(operations, fmt.Sprintf("Set LaunchServices scheme handler: %s -> %s", target.Value, association.App))
 					changed = true
 					continue
-				} else if !dutiAvailable {
+				} else if !dutiAvailable && !osascriptAvailable {
 					return operations, changed, fmt.Errorf("set macOS scheme handler %s: %w", target.Value, err)
 				}
 			}
-			if _, err := p.runnerOrDefault().Run(ctx, "duti", "-s", association.App, target.Value); err != nil {
-				return operations, changed, fmt.Errorf("set macOS scheme handler %s with duti: %w", target.Value, err)
+			if dutiAvailable {
+				if _, err := p.runnerOrDefault().Run(ctx, "duti", "-s", association.App, target.Value); err != nil {
+					if !osascriptAvailable {
+						return operations, changed, fmt.Errorf("set macOS scheme handler %s with duti: %w", target.Value, err)
+					}
+				} else {
+					operations = append(operations, fmt.Sprintf("Set duti scheme handler: %s -> %s", target.Value, association.App))
+					changed = true
+					continue
+				}
 			}
-			operations = append(operations, fmt.Sprintf("Set duti scheme handler: %s -> %s", target.Value, association.App))
-			changed = true
+			if osascriptAvailable {
+				if err := darwinAppleScriptSetURLScheme(target.Value, association.App); err != nil {
+					return operations, changed, fmt.Errorf("set macOS scheme handler %s with osascript: %w", target.Value, err)
+				}
+				operations = append(operations, fmt.Sprintf("Set osascript scheme handler: %s -> %s", target.Value, association.App))
+				changed = true
+			}
 		case KindMIME:
 			contentTypes := darwinContentTypesForWrite(target.Value)
 			if len(contentTypes) == 0 {
@@ -1785,10 +2347,29 @@ func (p darwinProvider) applyDarwinLaunchServicesAssociation(ctx context.Context
 						return operations, changed, fmt.Errorf("set macOS content handler %s: %w", contentType, err)
 					}
 				}
-				if _, err := p.runnerOrDefault().Run(ctx, "duti", "-s", association.App, contentType, "all"); err != nil {
-					return operations, changed, fmt.Errorf("set macOS content handler %s with duti: %w", contentType, err)
+				if dutiAvailable {
+					if _, err := p.runnerOrDefault().Run(ctx, "duti", "-s", association.App, contentType, "all"); err != nil {
+						return operations, changed, fmt.Errorf("set macOS content handler %s with duti: %w", contentType, err)
+					}
+					operations = append(operations, fmt.Sprintf("Set duti content-role handler: %s -> %s", contentType, association.App))
+					changed = true
 				}
-				operations = append(operations, fmt.Sprintf("Set duti content-role handler: %s -> %s", contentType, association.App))
+			}
+		case KindContentType:
+			if nativeAvailable {
+				if err := darwinNativeSetContentTypeHandler(target.Value, association.App); err == nil {
+					operations = append(operations, fmt.Sprintf("Set LaunchServices content-role handler: %s -> %s", target.Value, association.App))
+					changed = true
+					continue
+				} else if !dutiAvailable {
+					return operations, changed, fmt.Errorf("set macOS content handler %s: %w", target.Value, err)
+				}
+			}
+			if dutiAvailable {
+				if _, err := p.runnerOrDefault().Run(ctx, "duti", "-s", association.App, target.Value, "all"); err != nil {
+					return operations, changed, fmt.Errorf("set macOS content handler %s with duti: %w", target.Value, err)
+				}
+				operations = append(operations, fmt.Sprintf("Set duti content-role handler: %s -> %s", target.Value, association.App))
 				changed = true
 			}
 		default:
@@ -1811,13 +2392,19 @@ func (p darwinProvider) darwinSetGuidanceOperations(association Association) []s
 			for _, contentType := range normalizeMacContentType(target.Value) {
 				operations = append(operations, fmt.Sprintf("duti preview: duti -s %s %s all", association.App, contentType))
 			}
+		case KindContentType:
+			operations = append(operations, fmt.Sprintf("Plan LaunchServices content-role handler update: %s -> %s", target.Value, association.App))
+			operations = append(operations, fmt.Sprintf("duti preview: duti -s %s %s all", association.App, target.Value))
 		}
 	}
-	operations = append(operations, "Apply through System Settings, browser default prompts, or a future native LaunchServices write backend")
+	operations = append(operations, "Apply through System Settings, browser default prompts, or a native LaunchServices write backend")
 	return operations
 }
 
 func darwinTargetsForAssociation(target Target) []Target {
+	if target.Kind == KindContentType {
+		return []Target{target}
+	}
 	if target.Kind != KindBrowser && !(target.Kind == KindScheme && (target.Value == "http" || target.Value == "https")) {
 		return []Target{target}
 	}
@@ -1831,6 +2418,10 @@ func darwinTargetsForAssociation(target Target) []Target {
 
 func (p darwinProvider) dutiAvailable() bool {
 	return p.runnerOrDefaultHas("duti")
+}
+
+func (p darwinProvider) osascriptAvailable() bool {
+	return p.runnerOrDefaultHas("osascript")
 }
 
 func (p darwinProvider) runnerOrDefault() commandRunner {

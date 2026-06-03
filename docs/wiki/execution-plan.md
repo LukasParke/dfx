@@ -6,10 +6,13 @@ This plan maps research to implementation milestones for `dfx`.
 
 - Milestone 1 is complete: `inspect --verbose` exposes normalized provider capability flags, while `profile template` and `profile validate` provide provider-free profile generation and validation before mutation workflows.
 - Milestone 2 is complete for the tracked Linux matrix: all 30 Linux issues have detection, remediation guidance or mutation behavior, and tests.
-- Milestone 3 is complete for macOS read/detect/remediation coverage. Direct writes are implemented through LaunchServices public APIs when available, with `duti` as a fallback.
+- Milestone 3 is complete for macOS read/detect/remediation coverage. Direct writes are implemented through LaunchServices public APIs when available, with `duti` and `osascript` as fallbacks. Non-CGO builds can use an embedded helper binary.
 - Milestone 4 is complete for Windows read/detect/remediation coverage. Direct `UserChoice` mutation remains intentionally unsupported; writes are routed through managed default-association XML policy. `windows-policy` also provides ProgID capability discovery/audits, target coverage planning, self-contained deployment/removal bundles, zip archives, and bundle inspection, domain GPO create/configure/link artifacts, Backup-GPO safety backups, Restore-GPO rollback, Get-GPOReport settings reports, Get-GPRegistryValue policy-value inspection, local gpupdate refresh, remote Invoke-GPUpdate scheduling, gpresult/RSoP evidence collection, machine `Registry.pol`, offline `.reg`, LGPO text, and PowerShell policy pointer artifacts, active policy backup/restore, optional app-query-to-ProgID resolution, profile compilation/deployment and XML-to-profile round trips, direct profile-to-ApplicationDefaults CSP replace/delete payload generation, Intune custom OMA-URI setting generation, DISM image/default-user servicing wrappers, XML normalization and diff/drift checks, export, merge, Windows 11 suggested/version policy controls with validation visibility, status, validation, template generation, policy install, and policy uninstall helpers for enterprise workflows.
 - Milestone 5 is implemented for open-test: `open-test` provides a safe handler-resolution preflight with structured evidence, explicit `launched=false` status by default, and an opt-in `--launch` mode with launcher command evidence, with platform-backed integration fixtures now added for GNOME, KDE, WM-only Linux, recent macOS, and Windows 11 scenarios.
 - Milestone 6 is complete: every issue in the 90-issue catalog is mapped in [issue-matrix.md](./issue-matrix.md). macOS and Windows items are marked `safe` where remediation is constrained to guided, non-mutating flows.
+- Milestone 7 is complete: `KindContentType` is a first-class target kind. `--content-type` is supported in `get`, `set`, `open-test`, and `doctor`. Doctor supports `--mime`, `--scheme`, `--content-type`, and `--all` scopes on all platforms.
+- Milestone 8 is complete: system-level writes (`--system`) are supported on Linux (root-required `/etc/xdg/mimeapps.list` writes) and Windows (policy-backed). macOS emits guidance that system defaults require MDM or System Settings.
+- Milestone 9 is complete: CI runs tests on Linux, macOS, and Windows with race detection, cross-compilation matrix, lint, coverage, and integration fixtures.
 
 ## Milestone 1: Unified Domain Model
 
@@ -104,6 +107,6 @@ Acceptance:
 
 ## Immediate Next Engineering Tasks
 
-1. Integration fixture coverage is now in place across the three OS families for mixed WM/desktop-transition and duplicate-handler edge cases, including mismatch, fallback, duplicate-handler, browser-path, callback mismatch, and launch-skip-on-mismatch scenarios.
-2. Evaluate safe macOS LaunchServices write flows behind explicit capability gates before enabling non-dry-run writes.
+1. Build and embed the macOS LaunchServices helper binary for non-CGO amd64/arm64 builds.
+2. Expand integration fixture coverage for `--content-type`, `--all` doctor, and `--system` scenarios.
 3. Keep the issue matrix, remediation guide, README command contract notes, and JSON automation documentation synchronized as adapter behavior changes.

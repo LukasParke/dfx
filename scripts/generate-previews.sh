@@ -10,3 +10,4 @@ go build -o dist/dfx ./cmd/dfx
 export PATH="$ROOT/dist:$PATH"
 vhs docs/vhs/quickstart.tape
 vhs docs/vhs/automation.tape
+vhs docs/vhs/features.tape

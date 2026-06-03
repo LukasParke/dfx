@@ -1,4 +1,4 @@
-Output docs/previews/dfx-quickstart.gif
+Output docs/previews/dfx-features.gif
 
 Require dfx
 
@@ -19,24 +19,20 @@ Env PATH "/home/luke/.local/bin:/usr/local/bin:/usr/bin:/bin"
 Hide
 Type "rm -rf /tmp/dfx-vhs-home && mkdir -p /tmp/dfx-vhs-home/.local/share/applications"
 Enter
-Type 'printf "%s\n" "[Desktop Entry]" "Name=Vivaldi" "Exec=/usr/bin/vivaldi-stable %U" "MimeType=x-scheme-handler/http;x-scheme-handler/https;text/html;application/xhtml+xml;" > /tmp/dfx-vhs-home/.local/share/applications/vivaldi-stable.desktop'
+Type 'printf "%s\n" "[Desktop Entry]" "Name=Firefox" "Exec=/usr/bin/firefox %U" "MimeType=x-scheme-handler/http;x-scheme-handler/https;text/html;application/xhtml+xml;" > /tmp/dfx-vhs-home/.local/share/applications/firefox.desktop'
 Enter
 Type "clear"
 Enter
 Show
 
-Type "dfx inspect"
-Enter
-Sleep 1.2s
-
-Type "dfx set viv --browser --dry-run --json"
-Enter
-Sleep 2.5s
-
 Type "dfx get --content-type text/html"
 Enter
 Sleep 1s
 
-Type "dfx doctor --browser --strict"
+Type "dfx doctor --mime text/html --json"
 Enter
-Sleep 2s
+Sleep 1.5s
+
+Type "dfx set --browser --app firefox.desktop --dry-run"
+Enter
+Sleep 1.5s

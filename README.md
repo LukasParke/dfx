@@ -18,6 +18,10 @@ Profiles let you validate and dry-run a full default-app plan before applying it
 
 ![dfx automation preview](./docs/previews/dfx-automation.gif)
 
+New `--content-type`, `--mime`, and `--scheme` targets work across all platforms:
+
+![dfx features preview](./docs/previews/dfx-features.gif)
+
 The preview GIFs are generated with [Charm VHS](https://github.com/charmbracelet/vhs)
 from the tapes in [`docs/vhs`](./docs/vhs). CI regenerates them as build
 artifacts through [`previews.yml`](./.github/workflows/previews.yml).
@@ -36,11 +40,11 @@ go run ./cmd/dfx inspect
 
 ## Platform support
 
-| Platform | Read | Write | Notes |
-| --- | --- | --- | --- |
-| Linux | Yes | Yes | Uses `xdg-mime`; browser defaults also sync through `xdg-settings` when available. |
-| macOS | Yes | Yes, backend-dependent | Uses LaunchServices public APIs when available and `duti` as a CLI fallback; dry-run still shows the plan first. |
-| Windows | Yes | Yes, policy-backed | Writes default-association XML and configures the machine policy pointer; avoids unsafe `UserChoice` registry edits. |
+| Platform | Read | Write | System writes | Notes |
+| --- | --- | --- | --- | --- |
+| Linux | Yes | Yes | Yes (as root) | Uses `xdg-mime`; browser defaults also sync through `xdg-settings` when available. System-level writes target `/etc/xdg/mimeapps.list`. |
+| macOS | Yes | Yes, backend-dependent | Guidance only | Native LaunchServices (CGO), embedded helper, `duti`, or `osascript` fallback. System defaults require MDM or System Settings. |
+| Windows | Yes | Yes, policy-backed | Yes (via policy) | Writes default-association XML and configures the machine policy pointer; avoids unsafe `UserChoice` registry edits. |
 
 Windows writes require permission to update machine policy under
 `HKLM\Software\Policies\Microsoft\Windows\System`. By default, `dfx` writes the
@@ -55,6 +59,7 @@ and the next sign-in.
 dfx inspect
 dfx get --browser
 dfx get --scheme https
+dfx get --content-type public.html
 dfx set vivaldi --browser --dry-run
 dfx doctor --browser --strict
 ```
@@ -66,6 +71,14 @@ dfx set vivaldi --browser
 dfx set --browser --app firefox.desktop
 dfx set --mime text/html --app firefox.desktop
 dfx set --scheme https://example.com/path --app firefox.desktop
+dfx set --content-type public.html --app com.apple.Safari
+```
+
+System-level defaults (Linux only, requires root):
+
+```sh
+sudo dfx set --browser --app firefox.desktop --system
+sudo dfx apply dfx.json --system
 ```
 
 Partial app names are resolved where possible:
@@ -75,6 +88,20 @@ Partial app names are resolved where possible:
 - Windows: registered default-app metadata to ProgIDs.
 
 If a query is ambiguous, use the exact platform identifier.
+
+## Target kinds
+
+`dfx` supports four target kinds. The platform mapping is:
+
+| Kind | Linux | macOS | Windows |
+|------|-------|-------|---------|
+| `browser` | `xdg-settings` + `x-scheme-handler/http/https` + `text/html` | LaunchServices `http`/`https` + `public.html` | `http`/`https` + `.html`/`.xhtml` UserChoice |
+| `mime` | Direct MIME type via `xdg-mime` | MIME → UTI via `UTType` mapping | MIME → file extension → UserChoice |
+| `scheme` | `x-scheme-handler/<scheme>` | LaunchServices URL scheme | `UrlAssociations\<scheme>\UserChoice` |
+| `content_type` | Alias to `mime` (must be valid MIME) | Direct UTI (`public.html`) | ProgID or `.extension` registry lookup |
+
+`content_type` is the platform-native identifier: UTIs on macOS, ProgIDs or
+file extensions on Windows, and MIME types on Linux.
 
 ## Commands
 
@@ -93,14 +120,26 @@ dfx get --browser
 dfx get --mime text/html
 dfx get --scheme https
 dfx get --scheme https://example.com/path
+dfx get --content-type public.html
 ```
 
-Diagnose browser defaults:
+Diagnose defaults:
 
 ```sh
 dfx doctor --browser
+dfx doctor --mime text/html
+dfx doctor --scheme https
+dfx doctor --content-type public.html
+dfx doctor --all
+```
+
+Strict mode returns non-zero for warnings. Fix mode applies safe automated
+remediations for the selected scope:
+
+```sh
 dfx doctor --browser --strict
 dfx doctor --browser --fix --dry-run
+dfx doctor --all --fix --dry-run
 dfx doctor --browser --json
 ```
 
@@ -108,6 +147,7 @@ Preflight launch routing without opening an external app by default:
 
 ```sh
 dfx open-test --scheme myapp --expected com.example.App
+dfx open-test --content-type public.html --expected com.apple.Safari
 DFX_CALLBACK_SCHEME=myapp://oauth/callback dfx open-test --callback --expected com.example.App
 dfx open-test --mime text/html --expected firefox.desktop
 dfx open-test --mime text/html --path ./sample.html --expected firefox.desktop --launch
@@ -135,7 +175,9 @@ Example profile:
 {
   "defaults": [
     { "kind": "browser", "app": "firefox.desktop" },
-    { "kind": "scheme", "value": "myapp", "app": "myapp.desktop" }
+    { "kind": "scheme", "value": "myapp", "app": "myapp.desktop" },
+    { "kind": "mime", "value": "text/html", "app": "firefox.desktop" },
+    { "kind": "content_type", "value": "public.html", "app": "com.apple.Safari" }
   ]
 }
 ```
@@ -355,6 +397,32 @@ bash scripts/generate-previews.sh
 VHS rendering requires `ttyd`, `ffmpeg`, and a Chromium-compatible browser on
 the host. The CI preview workflow installs `ttyd`, runs the tapes, and uploads
 the generated GIFs as artifacts.
+
+## macOS write backends
+
+macOS writes use a cascading fallback chain:
+
+1. **Native LaunchServices (CGO)** — fastest, requires CGO-enabled build.
+2. **Embedded helper** — subprocess binary wrapping `LSSetDefaultHandlerForURLScheme`
+   and `LSSetDefaultRoleHandlerForContentType`. Built separately and embedded via
+   `//go:embed` for non-CGO builds.
+3. **`duti`** — CLI fallback (`brew install duti`).
+4. **`osascript`** — final fallback for URL schemes only; requires Accessibility
+   permissions and is slower than native calls.
+
+Run `dfx inspect` to see which backends are available on your build.
+
+## System-level writes
+
+Linux system-level writes (`--system`) require root and write directly to
+`/etc/xdg/mimeapps.list`, then run `update-desktop-database` and
+`update-mime-database`.
+
+macOS system defaults are not modifiable via CLI; `dfx` returns guidance
+explaining that MDM or System Settings are the supported channels.
+
+Windows system-level defaults are already policy-backed through the
+`DefaultAssociationsConfiguration` machine policy.
 
 ## Design principles
 
